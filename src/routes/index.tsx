@@ -1,11 +1,10 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Mic, MicOff, Loader2, Globe } from 'lucide-react'
+import { Globe, Loader2, Mic, MicOff } from 'lucide-react'
 import { useBankStore } from '../data/bank-store'
 import { useLocalAI } from '../hooks/useLocalAI'
 import { analyzeIntent } from '../functions/ai-intent'
 import { AudioVisualizer } from '../components/Dashboard/AudioVisualizer'
-import { FaceVerification } from '../components/Dashboard/FaceVerification'
 import { ActionCards } from '../components/Dashboard/ActionCards'
 
 export const Route = createFileRoute('/')({ component: Dashboard })
@@ -16,15 +15,12 @@ function Dashboard() {
     language,
     isRecording,
     isProcessing,
-    needsFaceVerification,
     setCurrentAction,
     setLanguage,
     setIsRecording,
     setIsProcessing,
-    setNeedsFaceVerification,
     balance,
     transactions,
-    reset,
   } = useBankStore()
 
   const { transcribeAudio, isReady, error: aiError } = useLocalAI()
@@ -38,7 +34,7 @@ function Dashboard() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       audioStreamRef.current = stream
 
-      const chunks: Blob[] = []
+      const chunks: Array<Blob> = []
       const mediaRecorder = new MediaRecorder(stream, {
         mimeType: 'audio/webm;codecs=opus',
       })
@@ -77,28 +73,13 @@ function Dashboard() {
           // Send to server function for intent analysis
           const intentResult = await analyzeIntent({ data: { text } })
 
-          // Check for security intercept
-          if (
-            intentResult.intent === 'Remittance' &&
-            intentResult.amount &&
-            intentResult.amount > 5000
-          ) {
-            setNeedsFaceVerification(true)
-            setCurrentAction({
-              intent: intentResult.intent,
-              amount: intentResult.amount,
-              recipient: intentResult.recipient,
-              timestamp: Date.now(),
-            })
-          } else {
-            setCurrentAction({
-              intent: intentResult.intent,
-              amount: intentResult.amount,
-              recipient: intentResult.recipient,
-              duration: intentResult.duration,
-              timestamp: Date.now(),
-            })
-          }
+          setCurrentAction({
+            intent: intentResult.intent,
+            amount: intentResult.amount,
+            recipient: intentResult.recipient,
+            duration: intentResult.duration,
+            timestamp: Date.now(),
+          })
         } catch (err) {
           console.error('Processing error:', err)
           setError(
@@ -123,7 +104,6 @@ function Dashboard() {
     setIsRecording,
     setIsProcessing,
     setCurrentAction,
-    setNeedsFaceVerification,
   ])
 
   const stopRecording = useCallback(() => {
@@ -132,16 +112,6 @@ function Dashboard() {
       setIsRecording(false)
     }
   }, [isRecording, setIsRecording])
-
-  const handleFaceVerified = useCallback(() => {
-    setNeedsFaceVerification(false)
-    // Continue with the transaction
-  }, [setNeedsFaceVerification])
-
-  const handleCloseFaceVerification = useCallback(() => {
-    setNeedsFaceVerification(false)
-    setCurrentAction(null)
-  }, [setNeedsFaceVerification, setCurrentAction])
 
   useEffect(() => {
     return () => {
@@ -152,12 +122,12 @@ function Dashboard() {
   }, [])
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-900 via-slate-800 to-slate-900 p-6">
+    <div className="min-h-screen bg-linear-to-b from-slate-900 via-slate-800 to-slate-900 p-6">
       <div className="max-w-6xl mx-auto">
         {/* Header */}
         <div className="text-center mb-8">
           <h1 className="text-4xl md:text-5xl font-black text-white mb-2">
-            <span className="bg-gradient-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent">
+            <span className="bg-linear-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent">
               Smart Banking Kiosk
             </span>
           </h1>
@@ -349,13 +319,6 @@ function Dashboard() {
           </div>
         </div>
       </div>
-
-      {/* Face Verification Modal */}
-      <FaceVerification
-        isOpen={needsFaceVerification}
-        onClose={handleCloseFaceVerification}
-        onVerified={handleFaceVerified}
-      />
     </div>
   )
 }

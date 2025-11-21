@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic_settings import BaseSettings
 from faster_whisper import WhisperModel
 import os
+import re
 import tempfile
 import shutil
 import time
@@ -20,6 +21,117 @@ class Settings(BaseSettings):
 
 settings = Settings()
 app = FastAPI()
+
+CJK_REGEX = re.compile(r"[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]")
+TAMIL_REGEX = re.compile(r"[\u0B80-\u0BFF]")
+ASCII_LETTER_REGEX = re.compile(r"[a-z]", re.IGNORECASE)
+MALAY_LANGUAGE_CODES = {"ms", "msa", "zsm"}
+MALAY_KEYWORDS = {
+    "akaun",
+    "akaun simpanan",
+    "akaun semasa",
+    "akaun kredit",
+    "akaun debit",
+    "bank",
+    "pindahan",
+    "pemindahan",
+    "pindahkan",
+    "memindahkan",
+    "transfer",
+    "wang",
+    "duit",
+    "tunai",
+    "nombor",
+    "jumlah",
+    "baki",
+    "semak",
+    "bayaran",
+    "pembayaran",
+    "penghantaran",
+    "pengeluaran",
+    "deposit",
+    "pinjaman",
+    "kadar",
+    "faedah",
+    "sila",
+    "terima kasih",
+    "tolong",
+    "daripada",
+    "kepada",
+    "perlu",
+    "anda",
+    "butiran",
+    "cawangan",
+    "pengesahan",
+    "kemas kini",
+    "kad",
+    "pelanggan",
+    "rujukan",
+    "perbankan",
+    "kewangan",
+}
+
+
+def normalize_language_code(code: str | None) -> str | None:
+    if not code:
+        return None
+    normalized = code.lower()
+    if normalized == "english":
+        return "en"
+    if normalized in {"chinese", "cmn"}:
+        return "zh"
+    if normalized == "tamil":
+        return "ta"
+    if normalized in MALAY_LANGUAGE_CODES or normalized == "malay":
+        return "ms"
+    return normalized
+
+
+def infer_language_from_text(text: str) -> str | None:
+    if not text:
+        return None
+    if CJK_REGEX.search(text):
+        return "zh"
+    if TAMIL_REGEX.search(text):
+        return "ta"
+    lower_text = text.lower()
+    if any(keyword in lower_text for keyword in MALAY_KEYWORDS):
+        return "ms"
+    if ASCII_LETTER_REGEX.search(text):
+        return "en"
+    return None
+
+
+def looks_english(text: str) -> bool:
+    if not text:
+        return False
+    if CJK_REGEX.search(text) or TAMIL_REGEX.search(text):
+        return False
+    clean = re.sub(r"[^a-zA-Z\s]", "", text)
+    letter_ratio = len(clean) / max(len(text), 1)
+    if letter_ratio < 0.6:
+        return False
+    lower_text = text.lower()
+    if any(keyword in lower_text for keyword in MALAY_KEYWORDS):
+        return False
+    return True
+
+
+def guard_language_prediction(
+    transcript_text: str, detected_language: str | None
+) -> tuple[str, bool]:
+    normalized = normalize_language_code(detected_language) or "unknown"
+
+    if normalized == "ms" and looks_english(transcript_text):
+        return "en", True
+
+    if normalized == "unknown":
+        inferred = infer_language_from_text(transcript_text)
+        if inferred:
+            return inferred, True
+
+    return normalized, False
+
 
 # Configure CORS
 app.add_middleware(
@@ -77,9 +189,15 @@ async def transcribe(
         segments_list = list(segments)
         full_text = "".join([segment.text for segment in segments_list]).strip()
 
+        guarded_language, guard_applied = guard_language_prediction(
+            full_text, info.language
+        )
+
         return {
             "text": full_text,
-            "language": info.language,
+            "language": guarded_language,
+            "language_guard_applied": guard_applied,
+            "language_model_raw": info.language,
             "language_probability": info.language_probability,
             "duration": info.duration,
             "processing_time": time.time() - start_time,

@@ -31,14 +31,12 @@ export interface BankState {
   language: string
   isRecording: boolean
   isProcessing: boolean
-  needsFaceVerification: boolean
   setBalance: (balance: number) => void
   addTransaction: (transaction: Omit<Transaction, 'id' | 'timestamp'>) => void
   setCurrentAction: (action: BankingAction | null) => void
   setLanguage: (lang: string) => void
   setIsRecording: (recording: boolean) => void
   setIsProcessing: (processing: boolean) => void
-  setNeedsFaceVerification: (needs: boolean) => void
   reset: () => void
 }
 
@@ -75,7 +73,6 @@ export const useBankStore = create<BankState>((set) => ({
   language: 'en',
   isRecording: false,
   isProcessing: false,
-  needsFaceVerification: false,
   setBalance: (balance) => set({ balance }),
   addTransaction: (transaction) =>
     set((state) => ({
@@ -96,14 +93,11 @@ export const useBankStore = create<BankState>((set) => ({
   setLanguage: (language) => set({ language }),
   setIsRecording: (isRecording) => set({ isRecording }),
   setIsProcessing: (isProcessing) => set({ isProcessing }),
-  setNeedsFaceVerification: (needsFaceVerification) =>
-    set({ needsFaceVerification }),
   reset: () =>
     set({
       currentAction: null,
       isRecording: false,
       isProcessing: false,
-      needsFaceVerification: false,
     }),
 }))
 

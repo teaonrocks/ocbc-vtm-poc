@@ -8,21 +8,11 @@ interface TranscriptionResult {
   latency?: number
 }
 
-interface FaceVerificationResult {
-  verified: boolean
-  confidence?: number
-}
-
 async function importTransformersModule() {
   return import('@xenova/transformers')
 }
 
-async function importFaceApiModule() {
-  return import('@vladmandic/face-api')
-}
-
 type TransformersModule = Awaited<ReturnType<typeof importTransformersModule>>
-type FaceApiModule = Awaited<ReturnType<typeof importFaceApiModule>>
 type TokenizerWithAsr = {
   _decode_asr: (...args: Array<unknown>) => unknown
   __languagePatched?: boolean
@@ -35,11 +25,31 @@ const ASCII_LETTER_REGEX = /[a-z]/i
 const MALAY_LANGUAGE_CODES = new Set(['ms', 'msa', 'zsm'])
 const MALAY_KEYWORDS = [
   'akaun',
+  'akaun simpanan',
+  'akaun semasa',
+  'akaun kredit',
+  'akaun debit',
+  'bank',
+  'pindahan',
   'pemindahan',
+  'pindahkan',
   'memindahkan',
+  'transfer',
   'wang',
+  'duit',
+  'tunai',
   'nombor',
   'jumlah',
+  'baki',
+  'semak',
+  'bayaran',
+  'pembayaran',
+  'penghantaran',
+  'pengeluaran',
+  'deposit',
+  'pinjaman',
+  'kadar',
+  'faedah',
   'sila',
   'terima kasih',
   'tolong',
@@ -52,11 +62,13 @@ const MALAY_KEYWORDS = [
   'pengesahan',
   'kemas kini',
   'kad',
+  'pelanggan',
+  'rujukan',
+  'perbankan',
+  'kewangan',
 ]
 
 let whisperPipeline: Pipeline | null = null
-let faceApi: FaceApiModule | null = null
-let faceApiLoaded = false
 
 function normalizeLanguageCode(code?: string | null): string | null {
   if (!code) return null
@@ -242,25 +254,6 @@ async function loadWhisper() {
   return whisperPipeline
 }
 
-async function loadFaceAPI() {
-  if (faceApiLoaded && faceApi) return faceApi
-
-  console.log('Loading Face API models...')
-  // Dynamic import to avoid SSR issues
-  faceApi = await importFaceApiModule()
-  const MODEL_URL = '/models'
-
-  await Promise.all([
-    faceApi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
-    faceApi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-    faceApi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
-  ])
-
-  faceApiLoaded = true
-  console.log('Face API models loaded')
-  return faceApi
-}
-
 async function transcribeWithServer(
   audioBlob: Blob,
   serverUrl: string,
@@ -291,7 +284,6 @@ async function transcribeWithServer(
 
 export function useLocalAI() {
   const [isWhisperReady, setIsWhisperReady] = useState(false)
-  const [isFaceAPIReady, setIsFaceAPIReady] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const isInitializing = useRef(false)
 
@@ -315,14 +307,6 @@ export function useLocalAI() {
       // Assume server is ready if URL is provided (or check health)
       setIsWhisperReady(true)
     }
-
-    // Load Face API
-    loadFaceAPI()
-      .then(() => setIsFaceAPIReady(true))
-      .catch((err) => {
-        console.error('Failed to load Face API:', err)
-        setError(`Failed to load Face API: ${err.message}`)
-      })
   }, [serverUrl])
 
   const transcribeAudio = useCallback(
@@ -421,42 +405,10 @@ export function useLocalAI() {
     [isWhisperReady, serverUrl],
   )
 
-  const verifyFace = useCallback(
-    async (videoElement: HTMLVideoElement): Promise<FaceVerificationResult> => {
-      if (!isFaceAPIReady || !faceApi) {
-        throw new Error('Face API not ready')
-      }
-
-      try {
-        const detections = await faceApi
-          .detectSingleFace(videoElement, new faceApi.TinyFaceDetectorOptions())
-          .withFaceLandmarks()
-          .withFaceDescriptor()
-
-        if (!detections) {
-          return { verified: false, confidence: 0 }
-        }
-
-        // For POC: Mock verification - in production, compare with stored descriptor
-        // Here we just check if a face is detected with reasonable confidence
-        const confidence = detections.detection.score || 0
-        const verified = confidence > 0.5
-
-        return { verified, confidence }
-      } catch (err) {
-        console.error('Face verification error:', err)
-        return { verified: false, confidence: 0 }
-      }
-    },
-    [isFaceAPIReady],
-  )
-
   return {
     isWhisperReady,
-    isFaceAPIReady,
-    isReady: isWhisperReady && isFaceAPIReady,
+    isReady: isWhisperReady,
     error,
     transcribeAudio,
-    verifyFace,
   }
 }
