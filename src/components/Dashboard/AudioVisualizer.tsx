@@ -84,3 +84,4 @@ export function AudioVisualizer({ audioStream, isRecording }: AudioVisualizerPro
   )
 }
 
+
