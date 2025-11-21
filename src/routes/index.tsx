@@ -1,11 +1,32 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Globe, Loader2, Mic, MicOff } from 'lucide-react'
+import {
+  Globe,
+  Loader2,
+  Mic,
+  MicOff,
+  MonitorUp,
+  PhoneCall,
+  PhoneOff,
+} from 'lucide-react'
 import { useBankStore } from '../data/bank-store'
 import { useLocalAI } from '../hooks/useLocalAI'
 import { analyzeIntent } from '../functions/ai-intent'
 import { AudioVisualizer } from '../components/Dashboard/AudioVisualizer'
 import { ActionCards } from '../components/Dashboard/ActionCards'
+import {
+  addStreamToPeer,
+  buildPeerConnection,
+  categorizeTrack,
+  connectSignalingSocket,
+  createCameraStream,
+  createScreenStream,
+  createSignalingSession,
+  stopStream,
+} from '../lib/webrtc'
+import type { SignalingMessage } from '../lib/webrtc'
+
+type CallState = 'idle' | 'preparing' | 'connecting' | 'connected' | 'error'
 
 export const Route = createFileRoute('/')({ component: Dashboard })
 
@@ -281,6 +302,8 @@ function Dashboard() {
                 ))}
               </div>
             </div>
+
+            <LiveAgentAssistPanel />
           </div>
         </div>
 
@@ -318,6 +341,455 @@ function Dashboard() {
             </div>
           </div>
         </div>
+      </div>
+    </div>
+  )
+}
+
+function LiveAgentAssistPanel() {
+  const [callState, setCallState] = useState<CallState>('idle')
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [callError, setCallError] = useState<string | null>(null)
+  const [participantCount, setParticipantCount] = useState(1)
+  const [localMedia, setLocalMedia] = useState<{
+    camera: MediaStream | null
+    screen: MediaStream | null
+  }>({ camera: null, screen: null })
+  const [remoteFeeds, setRemoteFeeds] = useState<{
+    camera: MediaStream | null
+    screen: MediaStream | null
+  }>({ camera: null, screen: null })
+  const [remoteAudioVersion, setRemoteAudioVersion] = useState(0)
+
+  const wsRef = useRef<WebSocket | null>(null)
+  const pcRef = useRef<RTCPeerConnection | null>(null)
+  const pendingSignalsRef = useRef<Array<SignalingMessage>>([])
+  const localVideoRef = useRef<HTMLVideoElement | null>(null)
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null)
+  const remoteScreenRef = useRef<HTMLVideoElement | null>(null)
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null)
+
+  const localCameraStreamRef = useRef<MediaStream | null>(null)
+  const localScreenStreamRef = useRef<MediaStream | null>(null)
+  const remoteCameraStreamRef = useRef<MediaStream | null>(null)
+  const remoteScreenStreamRef = useRef<MediaStream | null>(null)
+  const remoteAudioStreamRef = useRef<MediaStream | null>(null)
+
+  useEffect(() => {
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = localMedia.camera ?? null
+    }
+  }, [localMedia.camera])
+
+  useEffect(() => {
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = remoteFeeds.camera ?? null
+    }
+  }, [remoteFeeds.camera])
+
+  useEffect(() => {
+    if (remoteScreenRef.current) {
+      remoteScreenRef.current.srcObject = remoteFeeds.screen ?? null
+    }
+  }, [remoteFeeds.screen])
+
+  useEffect(() => {
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.srcObject = remoteAudioStreamRef.current ?? null
+    }
+  }, [remoteAudioVersion])
+
+  const sendSignal = useCallback((message: SignalingMessage) => {
+    const socket = wsRef.current
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      pendingSignalsRef.current = [...pendingSignalsRef.current, message]
+      return
+    }
+    socket.send(JSON.stringify(message))
+  }, [])
+
+  const flushPendingSignals = useCallback(() => {
+    const socket = wsRef.current
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return
+    }
+    if (pendingSignalsRef.current.length === 0) {
+      return
+    }
+    pendingSignalsRef.current.forEach((message) => {
+      socket.send(JSON.stringify(message))
+    })
+    pendingSignalsRef.current = []
+  }, [])
+
+  const cleanupLiveAgent = useCallback(
+    (
+      reason?: string,
+      nextState: CallState = 'idle',
+      closeSocket: boolean = true,
+    ) => {
+      if (closeSocket && wsRef.current) {
+        wsRef.current.onclose = null
+        wsRef.current.close()
+      }
+      wsRef.current = null
+
+      if (pcRef.current) {
+        pcRef.current.onicecandidate = null
+        pcRef.current.ontrack = null
+        pcRef.current.onconnectionstatechange = null
+        pcRef.current.close()
+      }
+      pcRef.current = null
+
+      stopStream(localCameraStreamRef.current)
+      stopStream(localScreenStreamRef.current)
+      stopStream(remoteCameraStreamRef.current)
+      stopStream(remoteScreenStreamRef.current)
+      stopStream(remoteAudioStreamRef.current)
+
+      localCameraStreamRef.current = null
+      localScreenStreamRef.current = null
+      remoteCameraStreamRef.current = null
+      remoteScreenStreamRef.current = null
+      remoteAudioStreamRef.current = null
+
+      setLocalMedia({ camera: null, screen: null })
+      setRemoteFeeds({ camera: null, screen: null })
+      setRemoteAudioVersion((prev) => prev + 1)
+      setParticipantCount(1)
+      setSessionId(null)
+      pendingSignalsRef.current = []
+
+      if (reason) {
+        setCallError(reason)
+      } else {
+        setCallError(null)
+      }
+
+      setCallState(nextState)
+    },
+    [],
+  )
+
+  useEffect(() => {
+    return () => {
+      cleanupLiveAgent()
+    }
+  }, [cleanupLiveAgent])
+
+  const handleRemoteTrack = useCallback((event: RTCTrackEvent) => {
+    const trackType = categorizeTrack(event.track)
+    if (trackType === 'audio') {
+      if (!remoteAudioStreamRef.current) {
+        remoteAudioStreamRef.current = new MediaStream()
+      }
+      const alreadyAdded = remoteAudioStreamRef.current
+        .getTracks()
+        .some((track) => track.id === event.track.id)
+      if (!alreadyAdded) {
+        remoteAudioStreamRef.current.addTrack(event.track)
+        setRemoteAudioVersion((prev) => prev + 1)
+      }
+      return
+    }
+
+    if (trackType === 'screen') {
+      const stream = event.streams[0] ?? new MediaStream([event.track])
+      remoteScreenStreamRef.current = stream
+      setRemoteFeeds((prev) => ({ ...prev, screen: stream }))
+      return
+    }
+
+    const stream = event.streams[0] ?? new MediaStream([event.track])
+    remoteCameraStreamRef.current = stream
+    setRemoteFeeds((prev) => ({ ...prev, camera: stream }))
+  }, [])
+
+  const handleSignalingMessage = useCallback(
+    async (message: SignalingMessage) => {
+      if (
+        message.type === 'peer-update' &&
+        message.payload &&
+        'participants' in message.payload
+      ) {
+        const participants = Number(message.payload.participants)
+        if (!Number.isNaN(participants)) {
+          setParticipantCount(participants)
+        }
+        return
+      }
+
+      if (message.type === 'heartbeat') {
+        return
+      }
+
+      if (message.type === 'error') {
+        cleanupLiveAgent(
+          message.payload?.message ?? 'Signaling error',
+          'error',
+          false,
+        )
+        return
+      }
+
+      const peer = pcRef.current
+      if (!peer) {
+        return
+      }
+
+      try {
+        if (message.type === 'answer') {
+          await peer.setRemoteDescription(message.payload)
+        } else if (message.type === 'ice') {
+          await peer.addIceCandidate(message.payload)
+        } else if (message.type === 'hangup') {
+          cleanupLiveAgent('Agent ended the session', 'idle', false)
+        }
+      } catch (err) {
+        cleanupLiveAgent(
+          err instanceof Error
+            ? err.message
+            : 'Failed to process signaling message',
+          'error',
+          false,
+        )
+      }
+    },
+    [cleanupLiveAgent],
+  )
+
+  const startLiveAgentSession = useCallback(async () => {
+    if (callState === 'connecting' || callState === 'preparing') {
+      return
+    }
+
+    setCallError(null)
+    setCallState('preparing')
+
+    try {
+      const { sessionId: id, iceServers } = await createSignalingSession()
+      setSessionId(id)
+
+      const peer = buildPeerConnection({
+        iceServers,
+        onIceCandidate: (candidate) => {
+          const payload = candidate.toJSON()
+          sendSignal({ type: 'ice', payload })
+        },
+        onTrack: handleRemoteTrack,
+        onConnectionStateChange: (state) => {
+          if (state === 'connected') {
+            setCallState('connected')
+          } else if (state === 'failed') {
+            cleanupLiveAgent('Peer connection failed', 'error')
+          } else if (state === 'disconnected') {
+            setCallState('connecting')
+          }
+        },
+      })
+      pcRef.current = peer
+
+      const cameraStream = await createCameraStream()
+      cameraStream
+        .getVideoTracks()
+        .forEach((track) => (track.contentHint = 'camera'))
+      localCameraStreamRef.current = cameraStream
+      setLocalMedia((prev) => ({ ...prev, camera: cameraStream }))
+      addStreamToPeer(peer, cameraStream)
+
+      let screenStream: MediaStream
+      try {
+        screenStream = await createScreenStream()
+      } catch (err) {
+        cleanupLiveAgent(
+          'Screen share permission is required to reach a live agent.',
+          'error',
+        )
+        return
+      }
+      screenStream
+        .getVideoTracks()
+        .forEach((track) => (track.contentHint = 'screen'))
+      localScreenStreamRef.current = screenStream
+      setLocalMedia((prev) => ({ ...prev, screen: screenStream }))
+      addStreamToPeer(peer, screenStream)
+
+      setCallState('connecting')
+
+      const socket = connectSignalingSocket({
+        sessionId: id,
+        role: 'vtm',
+        onMessage: handleSignalingMessage,
+        onClose: () => {
+          cleanupLiveAgent('Signaling channel closed', 'error', false)
+        },
+        onOpen: async () => {
+          flushPendingSignals()
+          try {
+            const offer = await peer.createOffer()
+            await peer.setLocalDescription(offer)
+            sendSignal({ type: 'offer', payload: offer })
+          } catch (err) {
+            cleanupLiveAgent(
+              err instanceof Error ? err.message : 'Unable to complete offer',
+              'error',
+            )
+          }
+        },
+      })
+
+      wsRef.current = socket
+    } catch (err) {
+      cleanupLiveAgent(
+        err instanceof Error ? err.message : 'Failed to start live session',
+        'error',
+      )
+    }
+  }, [
+    callState,
+    cleanupLiveAgent,
+    flushPendingSignals,
+    handleRemoteTrack,
+    handleSignalingMessage,
+    sendSignal,
+  ])
+
+  const endLiveAgentSession = useCallback(() => {
+    if (callState === 'idle') {
+      return
+    }
+    sendSignal({ type: 'hangup' })
+    cleanupLiveAgent(undefined, 'idle')
+  }, [callState, cleanupLiveAgent, sendSignal])
+
+  const statusCopy: Record<CallState, string> = {
+    idle: 'Idle',
+    preparing: 'Requesting agent',
+    connecting: 'Negotiating',
+    connected: 'Connected',
+    error: 'Error',
+  }
+
+  const statusColor: Record<CallState, string> = {
+    idle: 'bg-gray-700 text-gray-100',
+    preparing: 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/40',
+    connecting: 'bg-blue-500/20 text-blue-200 border border-blue-500/40',
+    connected: 'bg-green-500/20 text-green-200 border border-green-500/40',
+    error: 'bg-red-500/20 text-red-200 border border-red-500/40',
+  }
+
+  const liveAgentCount = Math.max(participantCount - 1, 0)
+  const showStartButton =
+    callState === 'idle' || callState === 'error' || callState === 'preparing'
+
+  return (
+    <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700 space-y-4">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <h2 className="text-xl font-semibold text-white mb-1">
+            Live Agent Assist
+          </h2>
+          <p className="text-sm text-gray-400">
+            Escalate to a human when customers need a person.
+          </p>
+        </div>
+        <span
+          className={`px-3 py-1 rounded-full text-xs font-semibold ${statusColor[callState]}`}
+        >
+          {statusCopy[callState]}
+        </span>
+      </div>
+
+      {sessionId && (
+        <div className="text-sm text-gray-400">
+          Session ID:{' '}
+          <span className="text-cyan-400 font-mono">{sessionId}</span>
+        </div>
+      )}
+
+      {callError && (
+        <div className="p-3 text-sm text-red-300 bg-red-500/10 border border-red-500/30 rounded-lg">
+          {callError}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-4">
+        <div>
+          <div className="flex items-center text-sm text-gray-400 gap-2 mb-2">
+            <MonitorUp size={16} />
+            <span>Local Preview</span>
+          </div>
+          <video
+            ref={localVideoRef}
+            muted
+            playsInline
+            autoPlay
+            className="w-full aspect-video rounded-lg bg-black border border-slate-700 object-cover"
+          />
+        </div>
+
+        <div>
+          <div className="flex items-center text-sm text-gray-400 gap-2 mb-2">
+            <MonitorUp size={16} />
+            <span>Remote Agent Video</span>
+          </div>
+          <video
+            ref={remoteVideoRef}
+            playsInline
+            autoPlay
+            className="w-full aspect-video rounded-lg bg-black border border-slate-700 object-contain"
+          />
+        </div>
+
+        <div>
+          <div className="flex items-center text-sm text-gray-400 gap-2 mb-2">
+            <MonitorUp size={16} />
+            <span>Shared Screen (Agent View)</span>
+          </div>
+          <video
+            ref={remoteScreenRef}
+            playsInline
+            autoPlay
+            className="w-full aspect-video rounded-lg bg-black border border-slate-700 object-contain"
+          />
+        </div>
+      </div>
+
+      <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
+
+      <div className="bg-slate-900/40 rounded-lg p-3 text-sm text-gray-300">
+        <div className="flex items-center justify-between mb-2">
+          <span>Agents connected</span>
+          <span className="text-white font-semibold">
+            {liveAgentCount > 0 ? liveAgentCount : 'Waiting'}
+          </span>
+        </div>
+        <p className="text-xs text-gray-500">
+          Agents can join by opening{' '}
+          <code className="text-cyan-400">/agent</code> on the same network.
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-2 sm:flex-row">
+        {showStartButton ? (
+          <button
+            onClick={startLiveAgentSession}
+            disabled={callState === 'preparing'}
+            className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg bg-cyan-500 hover:bg-cyan-600 disabled:bg-gray-600 disabled:cursor-not-allowed px-4 py-3 font-semibold text-white transition-colors"
+          >
+            <PhoneCall size={18} />
+            Request Live Agent
+          </button>
+        ) : (
+          <button
+            onClick={endLiveAgentSession}
+            className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg bg-red-500 hover:bg-red-600 px-4 py-3 font-semibold text-white transition-colors"
+          >
+            <PhoneOff size={18} />
+            End Session
+          </button>
+        )}
       </div>
     </div>
   )

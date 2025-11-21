@@ -4,6 +4,7 @@ import { useState } from 'react'
 import {
   ChevronDown,
   ChevronRight,
+  Headphones,
   Home,
   Menu,
   Network,
@@ -67,6 +68,19 @@ export default function Header() {
           >
             <Home size={20} />
             <span className="font-medium">Home</span>
+          </Link>
+
+          <Link
+            to="/agent"
+            onClick={() => setIsOpen(false)}
+            className="flex items-center gap-3 p-3 rounded-lg hover:bg-gray-800 transition-colors mb-2"
+            activeProps={{
+              className:
+                'flex items-center gap-3 p-3 rounded-lg bg-cyan-600 hover:bg-cyan-700 transition-colors mb-2',
+            }}
+          >
+            <Headphones size={20} />
+            <span className="font-medium">Agent Console</span>
           </Link>
 
           {/* Demo Links Start */}

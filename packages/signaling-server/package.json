@@ -1,0 +1,26 @@
+{
+  "name": "@vtm/signaling-server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsup src/index.ts --format esm --dts false --splitting false",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "nanoid": "^5.0.7",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/ws": "^8.5.12",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.1",
+    "typescript": "^5.7.2"
+  }
+}
+
