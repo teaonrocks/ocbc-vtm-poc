@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Pipeline } from '@xenova/transformers'
+import type { Pipeline } from '@xenova/transformers'
 
 interface TranscriptionResult {
   text: string
   language: string
+  backend: 'server' | 'webgpu'
+  latency?: number
 }
 
 interface FaceVerificationResult {
@@ -11,12 +13,24 @@ interface FaceVerificationResult {
   confidence?: number
 }
 
-// Dynamic import types
-type FaceApiType = typeof import('@vladmandic/face-api')
-type TransformersType = typeof import('@xenova/transformers')
+async function importTransformersModule() {
+  return import('@xenova/transformers')
+}
+
+async function importFaceApiModule() {
+  return import('@vladmandic/face-api')
+}
+
+type TransformersModule = Awaited<ReturnType<typeof importTransformersModule>>
+type FaceApiModule = Awaited<ReturnType<typeof importFaceApiModule>>
+type TokenizerWithAsr = {
+  _decode_asr: (...args: Array<unknown>) => unknown
+  __languagePatched?: boolean
+}
 
 const TARGET_SAMPLE_RATE = 16000
 const CJK_REGEX = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/
+const TAMIL_REGEX = /[\u0B80-\u0BFF]/
 const ASCII_LETTER_REGEX = /[a-z]/i
 const MALAY_LANGUAGE_CODES = new Set(['ms', 'msa', 'zsm'])
 const MALAY_KEYWORDS = [
@@ -41,7 +55,7 @@ const MALAY_KEYWORDS = [
 ]
 
 let whisperPipeline: Pipeline | null = null
-let faceApi: FaceApiType | null = null
+let faceApi: FaceApiModule | null = null
 let faceApiLoaded = false
 
 function normalizeLanguageCode(code?: string | null): string | null {
@@ -49,13 +63,16 @@ function normalizeLanguageCode(code?: string | null): string | null {
   const normalized = code.toLowerCase()
   if (normalized === 'english') return 'en'
   if (normalized === 'chinese' || normalized === 'cmn') return 'zh'
-  if (MALAY_LANGUAGE_CODES.has(normalized) || normalized === 'malay') return 'ms'
+  if (normalized === 'tamil') return 'ta'
+  if (MALAY_LANGUAGE_CODES.has(normalized) || normalized === 'malay')
+    return 'ms'
   return normalized
 }
 
 function inferLanguageFromText(text: string): string | null {
   if (!text) return null
   if (CJK_REGEX.test(text)) return 'zh'
+  if (TAMIL_REGEX.test(text)) return 'ta'
   const lower = text.toLowerCase()
   if (MALAY_KEYWORDS.some((keyword) => lower.includes(keyword))) {
     return 'ms'
@@ -66,7 +83,26 @@ function inferLanguageFromText(text: string): string | null {
   return null
 }
 
-function parseWhisperOutput(result: unknown): { text: string; language: string | null } {
+function looksEnglish(text: string): boolean {
+  if (!text) return false
+  if (CJK_REGEX.test(text) || TAMIL_REGEX.test(text)) return false
+
+  const clean = text.replace(/[^a-zA-Z\s]/g, '')
+  const letterRatio = clean.length / Math.max(text.length, 1)
+  if (letterRatio < 0.6) return false
+
+  const lower = text.toLowerCase()
+  if (MALAY_KEYWORDS.some((keyword) => lower.includes(keyword))) {
+    return false
+  }
+
+  return true
+}
+
+function parseWhisperOutput(result: unknown): {
+  text: string
+  language: string | null
+} {
   if (!result) {
     return { text: '', language: null }
   }
@@ -78,16 +114,28 @@ function parseWhisperOutput(result: unknown): { text: string; language: string |
   if (Array.isArray(result)) {
     const firstEntry = result[0] as Record<string, unknown> | undefined
     const text = (firstEntry?.text as string) || ''
-    const language = normalizeLanguageCode(firstEntry?.language as string | null)
+    const language = normalizeLanguageCode(
+      firstEntry?.language as string | null,
+    )
     return { text, language }
   }
 
   if (typeof result === 'object') {
     const obj = result as Record<string, unknown>
+
+    let chunkText: string | undefined
+    if (Array.isArray(obj.chunks) && obj.chunks[0]) {
+      const firstChunk = obj.chunks[0] as Record<string, unknown>
+      const candidate = firstChunk.text
+      if (typeof candidate === 'string') {
+        chunkText = candidate
+      }
+    }
+
     const text =
-      (obj.text as string) ||
-      (obj.transcription as string) ||
-      (Array.isArray(obj.chunks) && (obj.chunks[0] as Record<string, unknown>)?.text) ||
+      (obj.text as string | undefined) ??
+      (obj.transcription as string | undefined) ??
+      chunkText ??
       ''
 
     let language =
@@ -99,10 +147,13 @@ function parseWhisperOutput(result: unknown): { text: string; language: string |
 
     if (!language && Array.isArray(obj.chunks)) {
       const chunkWithLanguage = obj.chunks.find(
-        (chunk) => typeof chunk === 'object' && chunk !== null && 'language' in chunk,
+        (chunk) =>
+          typeof chunk === 'object' && chunk !== null && 'language' in chunk,
       ) as Record<string, unknown> | undefined
       if (chunkWithLanguage) {
-        language = normalizeLanguageCode(chunkWithLanguage.language as string | null)
+        language = normalizeLanguageCode(
+          chunkWithLanguage.language as string | null,
+        )
       }
     }
 
@@ -131,15 +182,22 @@ async function audioBlobToFloat32(audioBlob: Blob): Promise<Float32Array> {
   return resampled
 }
 
+type WhisperTask = 'transcribe' | 'translate'
+
 async function runWhisperTranscription(
   pipeline: Pipeline,
   audioArray: Float32Array,
-  languageOverride: string | null,
+  options?: {
+    languageOverride?: string | null
+    task?: WhisperTask
+  },
 ) {
+  const { languageOverride = null, task = 'transcribe' } = options ?? {}
+
   const result = await pipeline(audioArray, {
     return_timestamps: false,
     language: languageOverride,
-    task: 'transcribe',
+    task,
   })
 
   const parsed = parseWhisperOutput(result)
@@ -156,32 +214,30 @@ async function loadWhisper() {
   if (whisperPipeline) return whisperPipeline
 
   console.log('Loading Whisper model...')
-  const transformers = (await import('@xenova/transformers')) as TransformersType
+  const transformers: TransformersModule = await importTransformersModule()
   const pipelineInstance = (await transformers.pipeline(
     'automatic-speech-recognition',
     'Xenova/whisper-small',
     {
       device: 'webgpu',
-    },
+    } as Record<string, unknown>,
   )) as Pipeline
 
-  const pipelineWithInternals = pipelineInstance as Pipeline & {
-    tokenizer?: {
-      _decode_asr: (...args: any[]) => unknown
-      __languagePatched?: boolean
+  const tokenizer = (
+    pipelineInstance as unknown as { tokenizer?: TokenizerWithAsr }
+  ).tokenizer
+
+  if (tokenizer && !tokenizer.__languagePatched) {
+    const originalDecode = tokenizer._decode_asr.bind(tokenizer)
+    tokenizer._decode_asr = (...args: Array<unknown>) => {
+      const [chunks, maybeOptions] = args as [unknown, Record<string, unknown>?]
+      const options = maybeOptions ?? {}
+      return originalDecode(chunks, { ...options, return_language: true })
     }
+    tokenizer.__languagePatched = true
   }
 
-  if (pipelineWithInternals.tokenizer && !pipelineWithInternals.tokenizer.__languagePatched) {
-    const originalDecode = pipelineWithInternals.tokenizer._decode_asr.bind(
-      pipelineWithInternals.tokenizer,
-    )
-    pipelineWithInternals.tokenizer._decode_asr = (chunks: unknown, options: Record<string, unknown> = {}) =>
-      originalDecode(chunks, { ...options, return_language: true })
-    pipelineWithInternals.tokenizer.__languagePatched = true
-  }
-
-  whisperPipeline = pipelineWithInternals
+  whisperPipeline = pipelineInstance
   console.log('Whisper model loaded')
   return whisperPipeline
 }
@@ -191,7 +247,7 @@ async function loadFaceAPI() {
 
   console.log('Loading Face API models...')
   // Dynamic import to avoid SSR issues
-  faceApi = (await import('@vladmandic/face-api')) as FaceApiType
+  faceApi = await importFaceApiModule()
   const MODEL_URL = '/models'
 
   await Promise.all([
@@ -205,11 +261,41 @@ async function loadFaceAPI() {
   return faceApi
 }
 
+async function transcribeWithServer(
+  audioBlob: Blob,
+  serverUrl: string,
+): Promise<TranscriptionResult> {
+  const formData = new FormData()
+  formData.append('file', audioBlob)
+  formData.append('task', 'translate')
+  // formData.append('beam_size', '5')
+
+  const start = Date.now()
+  const response = await fetch(`${serverUrl}/transcribe`, {
+    method: 'POST',
+    body: formData,
+  })
+
+  if (!response.ok) {
+    throw new Error(`Server error: ${response.status} ${response.statusText}`)
+  }
+
+  const data = await response.json()
+  return {
+    text: data.text,
+    language: data.language || 'unknown',
+    backend: 'server',
+    latency: Date.now() - start,
+  }
+}
+
 export function useLocalAI() {
   const [isWhisperReady, setIsWhisperReady] = useState(false)
   const [isFaceAPIReady, setIsFaceAPIReady] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const isInitializing = useRef(false)
+
+  const serverUrl = import.meta.env.VITE_FASTER_WHISPER_URL
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -217,13 +303,18 @@ export function useLocalAI() {
 
     isInitializing.current = true
 
-    // Load Whisper
-    loadWhisper()
-      .then(() => setIsWhisperReady(true))
-      .catch((err) => {
-        console.error('Failed to load Whisper:', err)
-        setError(`Failed to load Whisper: ${err.message}`)
-      })
+    // Load Whisper only if server URL is not present
+    if (!serverUrl) {
+      loadWhisper()
+        .then(() => setIsWhisperReady(true))
+        .catch((err) => {
+          console.error('Failed to load Whisper:', err)
+          setError(`Failed to load Whisper: ${err.message}`)
+        })
+    } else {
+      // Assume server is ready if URL is provided (or check health)
+      setIsWhisperReady(true)
+    }
 
     // Load Face API
     loadFaceAPI()
@@ -232,7 +323,7 @@ export function useLocalAI() {
         console.error('Failed to load Face API:', err)
         setError(`Failed to load Face API: ${err.message}`)
       })
-  }, [])
+  }, [serverUrl])
 
   const transcribeAudio = useCallback(
     async (audioBlob: Blob): Promise<TranscriptionResult> => {
@@ -240,45 +331,94 @@ export function useLocalAI() {
         throw new Error('Whisper model not ready')
       }
 
+      if (serverUrl) {
+        try {
+          return await transcribeWithServer(audioBlob, serverUrl)
+        } catch (err) {
+          console.error(
+            'Server transcription failed, falling back to local:',
+            err,
+          )
+          // Fallback to local if server fails?
+          // For now, just throw to match plan "bypass local pipeline"
+          // But if we want fallback, we'd need to ensure local model is loaded.
+          throw err
+        }
+      }
+
       try {
         const pipeline = await loadWhisper()
-        if (!pipeline) throw new Error('Pipeline failed to load')
 
         const audioArray = await audioBlobToFloat32(audioBlob)
-        const initialRun = await runWhisperTranscription(pipeline, audioArray, null)
+        const start = Date.now()
+        const baseline = await runWhisperTranscription(pipeline, audioArray)
 
-        let finalText = initialRun.text
-        let finalLanguage = initialRun.language || inferLanguageFromText(initialRun.text) || 'unknown'
+        let detectedLanguage =
+          baseline.language || inferLanguageFromText(baseline.text) || 'unknown'
 
-        // Whisper occasionally misclassifies English audio as Malay ("ms").
-        if (finalLanguage === 'ms') {
-          const englishRetry = await runWhisperTranscription(pipeline, audioArray, 'en')
-          if (englishRetry.text) {
-            finalText = englishRetry.text
-            finalLanguage = englishRetry.language || 'en'
-          }
-        } else if (!finalLanguage || finalLanguage === 'unknown') {
-          // Fallback to English transcription if language detection was inconclusive.
-          const englishRetry = await runWhisperTranscription(pipeline, audioArray, 'en')
-          if (englishRetry.text.trim().length > 0) {
-            finalText = englishRetry.text
-            finalLanguage = englishRetry.language || inferLanguageFromText(englishRetry.text) || 'en'
-          } else if (CJK_REGEX.test(initialRun.text)) {
-            finalLanguage = 'zh'
-          }
+        if (detectedLanguage === 'ms' && looksEnglish(baseline.text)) {
+          detectedLanguage = 'en'
         }
 
+        let finalLanguage = detectedLanguage
         if (!finalLanguage || finalLanguage === 'unknown') {
-          finalLanguage = inferLanguageFromText(finalText) || 'unknown'
+          finalLanguage = inferLanguageFromText(baseline.text) || 'unknown'
         }
 
-        return { text: finalText, language: finalLanguage }
+        let finalText = baseline.text
+        const needsEnglishTranslation = finalLanguage !== 'en'
+
+        if (needsEnglishTranslation) {
+          const languageOverride =
+            finalLanguage === 'unknown'
+              ? null
+              : (finalLanguage as string | null)
+          const translation = await runWhisperTranscription(
+            pipeline,
+            audioArray,
+            {
+              languageOverride,
+              task: 'translate',
+            },
+          )
+
+          if (translation.text.trim().length > 0) {
+            finalText = translation.text
+          }
+        }
+
+        if (!finalText.trim()) {
+          // As a safety net, try an English pass
+          const englishRetry = await runWhisperTranscription(
+            pipeline,
+            audioArray,
+            {
+              languageOverride: 'en',
+              task: 'transcribe',
+            },
+          )
+          if (englishRetry.text.trim()) {
+            finalText = englishRetry.text
+            if (!finalLanguage || finalLanguage === 'unknown') {
+              finalLanguage = englishRetry.language || 'en'
+            }
+          }
+        }
+
+        return {
+          text: finalText,
+          language: finalLanguage,
+          backend: 'webgpu',
+          latency: Date.now() - start,
+        }
       } catch (err) {
         console.error('Transcription error:', err)
-        throw new Error(`Transcription failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+        throw new Error(
+          `Transcription failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        )
       }
     },
-    [isWhisperReady]
+    [isWhisperReady, serverUrl],
   )
 
   const verifyFace = useCallback(
@@ -308,7 +448,7 @@ export function useLocalAI() {
         return { verified: false, confidence: 0 }
       }
     },
-    [isFaceAPIReady]
+    [isFaceAPIReady],
   )
 
   return {

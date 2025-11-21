@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useCallback, useRef, useState } from 'react'
-import { Mic, MicOff, Loader2 } from 'lucide-react'
+import { Mic, MicOff, Loader2, Server, Cpu } from 'lucide-react'
 import { useLocalAI } from '../hooks/useLocalAI'
 
 export const Route = createFileRoute('/test-whisper')({
@@ -13,6 +13,8 @@ function WhisperTest() {
   const [isProcessing, setIsProcessing] = useState(false)
   const [transcription, setTranscription] = useState<string | null>(null)
   const [language, setLanguage] = useState<string | null>(null)
+  const [backend, setBackend] = useState<'server' | 'webgpu' | null>(null)
+  const [latency, setLatency] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioStreamRef = useRef<MediaStream | null>(null)
@@ -22,6 +24,8 @@ function WhisperTest() {
       setError(null)
       setTranscription(null)
       setLanguage(null)
+      setBackend(null)
+      setLatency(null)
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       audioStreamRef.current = stream
 
@@ -53,9 +57,11 @@ function WhisperTest() {
         setIsProcessing(true)
         try {
           const audioBlob = new Blob(chunks, { type: 'audio/webm' })
-          const { text, language } = await transcribeAudio(audioBlob)
-          setTranscription(text)
-          setLanguage(language)
+          const result = await transcribeAudio(audioBlob)
+          setTranscription(result.text)
+          setLanguage(result.language)
+          setBackend(result.backend)
+          setLatency(result.latency || null)
         } catch (err) {
           console.error('Transcription error:', err)
           setError(
@@ -90,6 +96,8 @@ function WhisperTest() {
     }
   }, [isRecording, startRecording, stopRecording])
 
+  const serverUrl = import.meta.env.VITE_FASTER_WHISPER_URL
+
   return (
     <div className="container mx-auto px-4 py-8 max-w-2xl">
       <h1 className="text-3xl font-bold mb-6">Whisper Model Test</h1>
@@ -98,6 +106,18 @@ function WhisperTest() {
       <div className="mb-6 p-4 bg-gray-100 rounded-lg">
         <h2 className="text-lg font-semibold mb-2">Status</h2>
         <div className="space-y-1">
+          <div>
+            <span className="font-medium">Backend:</span>{' '}
+            {serverUrl ? (
+              <span className="text-blue-600 font-semibold flex items-center gap-1 inline-flex">
+                <Server size={16} /> Remote Server
+              </span>
+            ) : (
+              <span className="text-purple-600 font-semibold flex items-center gap-1 inline-flex">
+                <Cpu size={16} /> Local WebGPU
+              </span>
+            )}
+          </div>
           <div>
             <span className="font-medium">Model:</span>{' '}
             {isWhisperReady ? (
@@ -162,11 +182,29 @@ function WhisperTest() {
         <div className="mt-6 p-4 bg-white border border-gray-300 rounded-lg">
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-lg font-semibold">Transcription</h2>
-            {language && (
-              <span className="text-sm text-gray-600 bg-gray-100 px-2 py-1 rounded">
-                Language: <span className="font-mono font-semibold">{language}</span>
-              </span>
-            )}
+            <div className="flex gap-2">
+              {language && (
+                <span className="text-sm text-gray-600 bg-gray-100 px-2 py-1 rounded">
+                  Lang:{' '}
+                  <span className="font-mono font-semibold">{language}</span>
+                </span>
+              )}
+              {backend && (
+                <span className="text-sm text-gray-600 bg-gray-100 px-2 py-1 rounded flex items-center gap-1">
+                  {backend === 'server' ? (
+                    <Server size={12} />
+                  ) : (
+                    <Cpu size={12} />
+                  )}
+                  <span className="font-mono font-semibold">{backend}</span>
+                </span>
+              )}
+              {latency && (
+                <span className="text-sm text-gray-600 bg-gray-100 px-2 py-1 rounded">
+                  <span className="font-mono font-semibold">{latency}ms</span>
+                </span>
+              )}
+            </div>
           </div>
           <p className="text-gray-800 whitespace-pre-wrap">{transcription}</p>
         </div>
@@ -186,4 +224,3 @@ function WhisperTest() {
     </div>
   )
 }
-
