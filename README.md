@@ -132,8 +132,21 @@ When a kiosk customer needs a human, the dashboard’s **Live Agent Assist** pan
 | `SIGNALING_PORT`          | `packages/signaling-server`    | Override the HTTP/WebSocket port (defaults to `4100`).                                       |
 | `STUN_SERVERS`            | `packages/signaling-server`    | Comma-separated list of STUN URLs (defaults to Google + Twilio).                             |
 | `TURN_SERVERS`            | `packages/signaling-server`    | Optional comma-separated TURN URLs for tougher NATs.                                         |
-| `VITE_SIGNALING_HTTP_URL` | frontend (`src/lib/webrtc.ts`) | Base URL the kiosk + agent UIs call for REST endpoints (`http://localhost:4100` by default). |
-| `VITE_SIGNALING_WS_URL`   | frontend                       | Explicit WebSocket URL if you need something other than `ws://localhost:4100/ws`.            |
+| `VITE_SIGNALING_HTTP_URL` | kiosk + agent UIs (`@ocbc/webrtc-client`) | Base URL the kiosk + agent UIs call for REST endpoints (`http://localhost:4100` by default). |
+| `VITE_SIGNALING_WS_URL`   | kiosk + agent UIs              | Explicit WebSocket URL if you need something other than `ws://localhost:4100/ws`.            |
+| `VITE_LIVE_AGENT_API_URL` | kiosk (`src/lib/live-agent.ts`) | HTTP endpoint that receives “Request Live Agent” tickets (`http://localhost:8081/api/ticket` by default). |
+| `VITE_LIVE_AGENT_WS_URL`  | `packages/liveAgentPOC`, kiosk ticket bridge | Optional override for the dashboard WebSocket feed; defaults to the same host as `VITE_LIVE_AGENT_API_URL`. |
+
+### Live Agent dashboard (`packages/liveAgentPOC`)
+
+Need an operator-facing board with richer ticket context? A dedicated TanStack Start app now ships under `packages/liveAgentPOC`:
+
+1. `pnpm --filter liveAgentPOC dev:bridge` – starts the ticket bridge (`server/websocket-server.js`) on `http://localhost:8081` for HTTP + WebSocket traffic.
+2. `pnpm --filter liveAgentPOC dev` – launches the dashboard UI on `http://localhost:3100`.
+3. Ensure the kiosk is pointing at the bridge (`VITE_LIVE_AGENT_API_URL=http://localhost:8081/api/ticket`).
+4. Log into the dashboard, watch tickets stream in, and press **Start Working** to auto-join the kiosk’s WebRTC session (camera, mic, and shared screen) via the shared signaling server.
+
+> The built-in `/agent` route inside the kiosk app is still handy for quick smoke tests, but the Live Agent dashboard adds ticket filters, metadata, and the new embedded video console for supervisors.
 
 ### Manual test checklist
 
@@ -149,6 +162,45 @@ When a kiosk customer needs a human, the dashboard’s **Live Agent Assist** pan
 
 > For hackathon demos on the same Wi‑Fi, STUN-only ICE servers work fine. Add TURN credentials (e.g., Coturn, Twilio ICE, LiveKit Cloud) before showing this on restrictive corporate or LTE networks.
 
+### Two-computer LAN setup
+
+When the kiosk (Computer 1) and the live agent dashboard (Computer 2) run on different machines, point everything at the agent machine’s IP address.
+
+1. **Pick a host (usually the live agent laptop) and note its LAN IP** via `ipconfig`/`ifconfig`.
+2. **On the host machine (Computer 2)** start the shared services:
+   ```bash
+   # Terminal A – WebRTC signaling server
+   pnpm dev:signaling-server
+
+   # Terminal B – Ticket bridge (HTTP + WS) used by the Live Agent dashboard
+   pnpm --filter liveAgentPOC dev:bridge
+
+   # Terminal C – Live Agent dashboard (Vite dev server)
+   pnpm --filter liveAgentPOC dev --host 0.0.0.0 --port 3100
+   ```
+   > The bridge listens on `http://0.0.0.0:8081` (tickets + WebSocket) and the dashboard exposes `http://HOST_IP:3100`.
+
+3. **On the kiosk machine (Computer 1)** create `.env.local` and point it back to the host:
+   ```
+   VITE_SIGNALING_HTTP_URL=http://<HOST_IP>:4100
+   VITE_SIGNALING_WS_URL=ws://<HOST_IP>:4100/ws
+   VITE_LIVE_AGENT_API_URL=http://<HOST_IP>:8081/api/ticket
+   ```
+   Then run the kiosk with LAN access:
+   ```bash
+   pnpm dev --host 0.0.0.0 --port 3000
+   ```
+
+4. **Agent UI**: Either open `http://HOST_IP:3100` (dashboard) or the built-in kiosk route `http://HOST_IP:3000/agent`. Both expect the same `.env.local` entries above so they talk to the host’s signaling server.
+
+5. **Firewall / permissions**: Allow inbound traffic on ports `3000`, `3100`, `4100`, and `8081` on the host machine. All WebRTC peers still negotiate STUN/TURN via the signaling server running on port `4100`.
+
+### Annotation overlay
+
+- Agents connected via `/agent` (or the standalone dashboard) can draw arrows and circles directly on top of the kiosk’s shared screen.  
+- These strokes ride on a WebRTC data channel labeled `annotations`, so they stay in lockstep with the media streams.  
+- The kiosk UI includes a **“Show agent annotations”** toggle in the Live Agent panel, and shapes auto-expire after ~20 seconds to avoid clutter.
+
 ---
 
 ## Project Structure Highlights
@@ -156,6 +208,8 @@ When a kiosk customer needs a human, the dashboard’s **Live Agent Assist** pan
 - `src/routes/index.tsx` – Main kiosk experience
 - `src/routes/__root.tsx` – Global document shell + header + TanStack devtools
 - `src/routes/agent.tsx` – Agent console that lists escalations and answers WebRTC calls
+- `packages/liveAgentPOC` – Standalone Live Agent dashboard + ticket bridge
+- `packages/webrtc-client` – Shared signaling helpers consumed by both kiosk and dashboard apps
 - `src/components/Dashboard/*` – Audio visualizer and intent-specific cards
 - `src/hooks/useLocalAI.ts` – Shared hook for on-device transcription
 - `src/functions/ai-intent.ts` – Server function that brokers Ollama requests

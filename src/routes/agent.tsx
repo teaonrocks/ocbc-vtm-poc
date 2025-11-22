@@ -10,15 +10,24 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   addStreamToPeer,
+  attachHandlersToChannel,
   buildPeerConnection,
   categorizeTrack,
   connectSignalingSocket,
   createCameraStream,
+  createDataChannel,
   listSignalingSessions,
   stopStream,
   type SessionSummary,
   type SignalingMessage,
-} from '../lib/webrtc'
+} from '@ocbc/webrtc-client'
+import { AnnotationSurface } from '../components/Agent/AnnotationSurface'
+import {
+  ANNOTATION_CHANNEL_LABEL,
+  type AnnotationDrawMessage,
+  type AnnotationMessage,
+  type AnnotationShape,
+} from '../types/annotations'
 
 type AgentCallState = 'idle' | 'answering' | 'connected' | 'error'
 
@@ -39,6 +48,19 @@ function AgentConsole() {
     screen: MediaStream | null
   }>({ camera: null, screen: null })
   const [remoteAudioVersion, setRemoteAudioVersion] = useState(0)
+  const [annotationTool, setAnnotationTool] =
+    useState<AnnotationShape>('arrow')
+  const [annotationColor, setAnnotationColor] = useState('#f97316')
+  const [annotationReady, setAnnotationReady] = useState(false)
+  const annotationColors = [
+    { label: 'Amber', value: '#f97316' },
+    { label: 'Teal', value: '#14b8a6' },
+    { label: 'Rose', value: '#f43f5e' },
+  ]
+  const annotationTools: Array<{ label: string; value: AnnotationShape }> = [
+    { label: 'Arrow', value: 'arrow' },
+    { label: 'Circle', value: 'circle' },
+  ]
 
   const wsRef = useRef<WebSocket | null>(null)
   const pcRef = useRef<RTCPeerConnection | null>(null)
@@ -53,6 +75,7 @@ function AgentConsole() {
   const remoteCameraStreamRef = useRef<MediaStream | null>(null)
   const remoteScreenStreamRef = useRef<MediaStream | null>(null)
   const remoteAudioStreamRef = useRef<MediaStream | null>(null)
+  const annotationChannelRef = useRef<RTCDataChannel | null>(null)
 
   useEffect(() => {
     if (localVideoRef.current) {
@@ -143,6 +166,13 @@ function AgentConsole() {
         pcRef.current.close()
       }
       pcRef.current = null
+
+      if (annotationChannelRef.current) {
+        annotationChannelRef.current.onmessage = null
+        annotationChannelRef.current.close()
+      }
+      annotationChannelRef.current = null
+      setAnnotationReady(false)
 
       stopStream(localStreamRef.current)
       stopStream(remoteCameraStreamRef.current)
@@ -252,6 +282,29 @@ function AgentConsole() {
     [cleanupCall, sendSignal],
   )
 
+  const sendAnnotationMessage = useCallback((message: AnnotationMessage) => {
+    const channel = annotationChannelRef.current
+    if (!channel || channel.readyState !== 'open') {
+      return
+    }
+    try {
+      channel.send(JSON.stringify(message))
+    } catch (error) {
+      console.error('Failed to send annotation payload', error)
+    }
+  }, [])
+
+  const handleEmitAnnotation = useCallback(
+    (annotation: AnnotationDrawMessage) => {
+      sendAnnotationMessage(annotation)
+    },
+    [sendAnnotationMessage],
+  )
+
+  const handleClearAnnotations = useCallback(() => {
+    sendAnnotationMessage({ kind: 'clear' })
+  }, [sendAnnotationMessage])
+
   const joinSession = useCallback(
     async (sessionId: string) => {
       if (!sessionId) {
@@ -281,6 +334,19 @@ function AgentConsole() {
           },
         })
         pcRef.current = peer
+
+        annotationChannelRef.current = createDataChannel(
+          peer,
+          ANNOTATION_CHANNEL_LABEL,
+          {
+            onOpen: () => setAnnotationReady(true),
+            onClose: () => {
+              setAnnotationReady(false)
+              annotationChannelRef.current = null
+            },
+            onError: () => setAnnotationReady(false),
+          },
+        )
 
         const localStream = await createCameraStream()
         localStreamRef.current = localStream
@@ -503,16 +569,72 @@ function AgentConsole() {
               </div>
 
               <div>
-                <div className="text-sm text-gray-400 mb-2 flex items-center gap-2">
-                  <MonitorUp size={16} />
-                  Shared Screen
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3 text-sm text-gray-400">
+                  <div className="flex items-center gap-2">
+                    <MonitorUp size={16} />
+                    Shared Screen
+                  </div>
+                  <div className="flex items-center gap-2 text-xs text-gray-500">
+                    <span>Tool:</span>
+                    {annotationTools.map((tool) => (
+                      <button
+                        key={tool.value}
+                        onClick={() => setAnnotationTool(tool.value)}
+                        className={`rounded-full border px-3 py-1 font-semibold transition-colors ${
+                          annotationTool === tool.value
+                            ? 'border-cyan-400 bg-cyan-400/10 text-cyan-200'
+                            : 'border-slate-700 bg-slate-900 text-gray-300 hover:border-slate-500'
+                        }`}
+                      >
+                        {tool.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-                <video
-                  ref={remoteScreenRef}
-                  playsInline
-                  autoPlay
-                  className="w-full aspect-video rounded-lg bg-black border border-slate-800 object-contain"
-                />
+                <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                  <span>Color:</span>
+                  {annotationColors.map((entry) => (
+                    <button
+                      key={entry.value}
+                      onClick={() => setAnnotationColor(entry.value)}
+                      className={`h-6 w-6 rounded-full border-2 transition ${
+                        annotationColor === entry.value
+                          ? 'border-white'
+                          : 'border-transparent'
+                      }`}
+                      style={{ backgroundColor: entry.value }}
+                      aria-label={`Select ${entry.label} annotation color`}
+                    />
+                  ))}
+                  <button
+                    onClick={handleClearAnnotations}
+                    disabled={!annotationReady}
+                    className="ml-auto inline-flex items-center gap-1 rounded-full border border-slate-600 px-3 py-1 font-semibold text-gray-200 transition hover:border-slate-400 disabled:opacity-40"
+                  >
+                    Clear
+                  </button>
+                  <span
+                    className={`font-semibold ${
+                      annotationReady ? 'text-green-400' : 'text-red-400'
+                    }`}
+                  >
+                    {annotationReady ? 'Channel ready' : 'Channel offline'}
+                  </span>
+                </div>
+                <div className="relative">
+                  <video
+                    ref={remoteScreenRef}
+                    playsInline
+                    autoPlay
+                    className="w-full aspect-video rounded-lg bg-black border border-slate-800 object-contain"
+                  />
+                  <AnnotationSurface
+                    tool={annotationTool}
+                    color={annotationColor}
+                    disabled={!annotationReady || callState !== 'connected'}
+                    onEmit={handleEmitAnnotation}
+                  />
+                </div>
               </div>
             </div>
 
