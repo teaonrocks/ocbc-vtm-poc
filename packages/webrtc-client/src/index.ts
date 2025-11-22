@@ -234,6 +234,16 @@ export function buildPeerConnection({
 export async function createCameraStream(
   constraints?: MediaStreamConstraints,
 ) {
+  if (
+    typeof navigator === 'undefined' ||
+    !navigator.mediaDevices ||
+    typeof navigator.mediaDevices.getUserMedia !== 'function'
+  ) {
+    throw new Error(
+      'Camera APIs are unavailable in this environment. Please run inside a supported browser and allow camera access.',
+    )
+  }
+
   return navigator.mediaDevices.getUserMedia(
     constraints ?? {
       audio: true,
@@ -249,6 +259,16 @@ export async function createCameraStream(
 export async function createScreenStream(
   constraints?: DisplayMediaStreamOptions,
 ) {
+  if (
+    typeof navigator === 'undefined' ||
+    !navigator.mediaDevices ||
+    typeof navigator.mediaDevices.getDisplayMedia !== 'function'
+  ) {
+    throw new Error(
+      'Screen sharing APIs are unavailable in this environment. Try launching the kiosk in a browser that supports screen capture.',
+    )
+  }
+
   return navigator.mediaDevices.getDisplayMedia(
     constraints ?? {
       video: {
@@ -297,7 +317,9 @@ function formatIceServers(raw: unknown): RTCIceServer[] {
   if (!Array.isArray(raw)) {
     return defaultIceServers()
   }
-  
+
+  type CandidateUrls = string | string[]
+
   // Helper to clean STUN URLs (remove query params that Safari doesn't like)
   const cleanStunUrl = (url: string): string => {
     if (url.startsWith('stun:') || url.startsWith('stuns:')) {
@@ -307,51 +329,50 @@ function formatIceServers(raw: unknown): RTCIceServer[] {
     // Keep TURN URLs as-is (they may need query params for credentials)
     return url
   }
-  
-  const formatted = raw
-    .map((entry) => {
+
+  const normalizedUrls = raw
+    .map((entry): CandidateUrls | null => {
       if (typeof entry === 'string') {
-        return { urls: cleanStunUrl(entry) }
+        return cleanStunUrl(entry)
       }
       if (entry && typeof entry === 'object' && 'urls' in entry) {
         const urls = entry.urls
         if (typeof urls === 'string') {
-          return { urls: cleanStunUrl(urls) }
+          return cleanStunUrl(urls)
         }
         if (Array.isArray(urls) && urls.every((u) => typeof u === 'string')) {
-          return { urls: urls.map(cleanStunUrl) }
+          return urls.map(cleanStunUrl)
         }
       }
       return null
     })
-    .filter((entry): entry is RTCIceServer => entry !== null)
-  
-  // If formatting resulted in empty array, use defaults
-  if (formatted.length === 0) {
+    .filter((urls): urls is CandidateUrls => urls !== null)
+
+  if (normalizedUrls.length === 0) {
     console.warn('No valid ICE servers after formatting, using defaults')
     return defaultIceServers()
   }
-  
-  // Validate URLs are properly formatted
-  const validated = formatted.filter((server) => {
-    const urls = Array.isArray(server.urls) ? server.urls : [server.urls]
-    return urls.every((url) => {
-      if (typeof url !== 'string') return false
-      // Check if it's a valid STUN/TURN URL format
-      return (
-        url.startsWith('stun:') ||
-        url.startsWith('stuns:') ||
-        url.startsWith('turn:') ||
-        url.startsWith('turns:')
-      )
+
+  const validated = normalizedUrls
+    .map<RTCIceServer>((urls) => ({ urls }))
+    .filter((server) => {
+      const urls = Array.isArray(server.urls) ? server.urls : [server.urls]
+      return urls.every((url) => {
+        if (typeof url !== 'string') return false
+        return (
+          url.startsWith('stun:') ||
+          url.startsWith('stuns:') ||
+          url.startsWith('turn:') ||
+          url.startsWith('turns:')
+        )
+      })
     })
-  })
-  
+
   if (validated.length === 0) {
     console.warn('No valid STUN/TURN URLs found, using defaults')
     return defaultIceServers()
   }
-  
+
   return validated
 }
 
