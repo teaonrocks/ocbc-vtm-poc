@@ -1,6 +1,8 @@
 import cors from 'cors'
 import express from 'express'
-import { createServer } from 'http'
+import { createServer } from 'https'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import { nanoid } from 'nanoid'
 import { WebSocket, WebSocketServer } from 'ws'
 
@@ -90,7 +92,17 @@ app.delete('/sessions/:id', (req, res) => {
   res.status(existed ? 204 : 404).end()
 })
 
-const server = createServer(app)
+// Load SSL certificates from workspace root
+const certPath = join(__dirname, '..', '..', '..', 'cert.pem')
+const keyPath = join(__dirname, '..', '..', '..', 'cert-key.pem')
+
+const server = createServer(
+  {
+    cert: readFileSync(certPath),
+    key: readFileSync(keyPath),
+  },
+  app,
+)
 const wss = new WebSocketServer({ server, path: '/ws' })
 
 function closeSessionIfEmpty(sessionId: string) {
@@ -224,6 +236,6 @@ wss.on('connection', (socket, req) => {
 })
 
 server.listen(PORT, () => {
-  console.log(`Signaling server listening on http://localhost:${PORT}`)
+  console.log(`Signaling server listening on https://localhost:${PORT}`)
 })
 
