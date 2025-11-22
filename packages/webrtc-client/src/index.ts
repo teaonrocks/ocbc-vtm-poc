@@ -40,7 +40,7 @@ const defaultHttpUrl =
 
 const defaultWsUrl =
   import.meta.env.VITE_SIGNALING_WS_URL ??
-  defaultHttpUrl.replace('http', 'ws').concat('/ws')
+  defaultHttpUrl.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:').concat('/ws')
 
 export function resolveSignalingHttpUrl() {
   return defaultHttpUrl.replace(/\/$/, '')
