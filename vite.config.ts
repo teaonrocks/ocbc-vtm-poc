@@ -31,8 +31,8 @@ const config = defineConfig({
     host: '0.0.0.0',
     port: 3000,
     https: {
-      key: fs.readFileSync('./localhost-key.pem'),
-      cert: fs.readFileSync('./localhost.pem'),
+      key: fs.readFileSync('./cert-key.pem'),
+      cert: fs.readFileSync('./cert.pem'),
     },
   },
 })
