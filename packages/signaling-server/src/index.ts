@@ -1,8 +1,8 @@
 import cors from 'cors'
 import express from 'express'
-import { createServer } from 'https'
-import { readFileSync } from 'fs'
-import { join } from 'path'
+import fs from 'fs'
+import { createServer as createHttpServer } from 'http'
+import { createServer as createHttpsServer } from 'https'
 import { nanoid } from 'nanoid'
 import { WebSocket, WebSocketServer } from 'ws'
 
@@ -92,17 +92,43 @@ app.delete('/sessions/:id', (req, res) => {
   res.status(existed ? 204 : 404).end()
 })
 
-// Load SSL certificates from workspace root
-const certPath = join(__dirname, '..', '..', '..', 'cert.pem')
-const keyPath = join(__dirname, '..', '..', '..', 'cert-key.pem')
+function createServerWithOptionalTls() {
+  const certPath = process.env.SIGNALING_TLS_CERT
+  const keyPath = process.env.SIGNALING_TLS_KEY
 
-const server = createServer(
-  {
-    cert: readFileSync(certPath),
-    key: readFileSync(keyPath),
-  },
-  app,
-)
+  if (!certPath || !keyPath) {
+    console.warn(
+      'SIGNALING_TLS_CERT and/or SIGNALING_TLS_KEY are not set. Falling back to HTTP.',
+    )
+    return {
+      server: createHttpServer(app),
+      protocol: 'http',
+    }
+  }
+
+  try {
+    const cert = fs.readFileSync(certPath)
+    const key = fs.readFileSync(keyPath)
+    console.log(
+      `Loaded TLS cert from ${certPath} and key from ${keyPath}. Serving signaling over HTTPS.`,
+    )
+    return {
+      server: createHttpsServer({ cert, key }, app),
+      protocol: 'https',
+    }
+  } catch (error) {
+    console.warn(
+      'Failed to read TLS certificate or key for signaling server. Falling back to HTTP.',
+      error,
+    )
+    return {
+      server: createHttpServer(app),
+      protocol: 'http',
+    }
+  }
+}
+
+const { server, protocol } = createServerWithOptionalTls()
 const wss = new WebSocketServer({ server, path: '/ws' })
 
 function closeSessionIfEmpty(sessionId: string) {
@@ -139,7 +165,7 @@ wss.on('connection', (socket, req) => {
   try {
     const requestUrl = new URL(
       req.url ?? '/',
-      `http://${req.headers.host ?? 'localhost'}`,
+      `${protocol}://${req.headers.host ?? 'localhost'}`,
     )
     const sessionId = requestUrl.searchParams.get('sessionId')
     const role = (requestUrl.searchParams.get('role') ?? 'vtm') as Role
@@ -236,6 +262,8 @@ wss.on('connection', (socket, req) => {
 })
 
 server.listen(PORT, () => {
-  console.log(`Signaling server listening on https://localhost:${PORT}`)
+  console.log(
+    `Signaling server listening on ${protocol}://localhost:${PORT} (${protocol === 'https' ? 'wss' : 'ws'} available at ${protocol === 'https' ? 'wss' : 'ws'}://localhost:${PORT}/ws)`,
+  )
 })
 

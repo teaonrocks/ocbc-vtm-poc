@@ -760,7 +760,7 @@ function LiveAgentAssistPanel({
         cleanupLiveAgent(
           errorMessage.includes('Configuration') ||
             errorMessage.includes('Invalid')
-            ? `WebRTC configuration error: ${errorMessage}. Please ensure the signaling server is running at ${import.meta.env.VITE_SIGNALING_HTTP_URL ?? 'http://localhost:4100'}.`
+            ? `WebRTC configuration error: ${errorMessage}. Please ensure the signaling server is running at ${import.meta.env.VITE_SIGNALING_HTTP_URL ?? 'https://localhost:4100'}.`
             : `Failed to create peer connection: ${errorMessage}`,
           'error',
         )

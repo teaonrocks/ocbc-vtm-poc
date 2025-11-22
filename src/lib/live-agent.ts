@@ -1,6 +1,6 @@
 const defaultApiUrl =
   import.meta.env.VITE_LIVE_AGENT_API_URL ??
-  'http://localhost:8081/api/ticket'
+  'https://localhost:8081/api/ticket'
 
 export type LiveAgentTicketPayload = {
   sessionId: string

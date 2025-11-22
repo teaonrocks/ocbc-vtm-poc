@@ -53,10 +53,11 @@ Alongside the kiosk, the repo still ships with the vanilla TanStack Start demo r
 3. **Run the dev server**
 
    ```bash
-   pnpm dev        # default http://localhost:3000
+   pnpm dev        # default https://localhost:3000 (self-signed)
    # or expose to another device/kiosk
    pnpm dev --host
    ```
+   > On Windows, run `set NODE_NO_HTTP2=1 && pnpm dev --host 0.0.0.0 --port 3000` so Vite serves HTTPS over HTTP/1.
 
 4. Open the site, allow microphone access, and try one of the sample voice commands listed at the bottom of the dashboard (e.g. “Send $1000 to John Doe”).
 
@@ -123,7 +124,7 @@ When a kiosk customer needs a human, the dashboard’s **Live Agent Assist** pan
 - Stack: Express + `ws`, in-memory room registry, STUN/TURN aware
 - Default port: `4100`
 - Health check: `GET /healthz`
-- WebSocket endpoint: `ws://<host>:4100/ws?sessionId=XXXX&role=vtm|agent`
+- WebSocket endpoint: `wss://<host>:4100/ws?sessionId=XXXX&role=vtm|agent`
 
 ### Environment variables
 
@@ -132,25 +133,32 @@ When a kiosk customer needs a human, the dashboard’s **Live Agent Assist** pan
 | `SIGNALING_PORT`          | `packages/signaling-server`    | Override the HTTP/WebSocket port (defaults to `4100`).                                       |
 | `STUN_SERVERS`            | `packages/signaling-server`    | Comma-separated list of STUN URLs (defaults to Google + Twilio).                             |
 | `TURN_SERVERS`            | `packages/signaling-server`    | Optional comma-separated TURN URLs for tougher NATs.                                         |
-| `VITE_SIGNALING_HTTP_URL` | kiosk + agent UIs (`@ocbc/webrtc-client`) | Base URL the kiosk + agent UIs call for REST endpoints (`http://localhost:4100` by default). |
-| `VITE_SIGNALING_WS_URL`   | kiosk + agent UIs              | Explicit WebSocket URL if you need something other than `ws://localhost:4100/ws`.            |
-| `VITE_LIVE_AGENT_API_URL` | kiosk (`src/lib/live-agent.ts`) | HTTP endpoint that receives “Request Live Agent” tickets (`http://localhost:8081/api/ticket` by default). |
+| `SIGNALING_TLS_CERT/KEY`  | `packages/signaling-server`    | PEM files for enabling HTTPS/WSS on the signaling server (required when kiosks run over HTTPS). |
+| `VITE_SIGNALING_HTTP_URL` | kiosk + agent UIs (`@ocbc/webrtc-client`) | Base URL the kiosk + agent UIs call for REST endpoints (`https://localhost:4100` by default). |
+| `VITE_SIGNALING_WS_URL`   | kiosk + agent UIs              | Explicit WebSocket URL if you need something other than `wss://localhost:4100/ws`.           |
+| `VITE_LIVE_AGENT_API_URL` | kiosk (`src/lib/live-agent.ts`) | HTTPS endpoint that receives “Request Live Agent” tickets (`https://localhost:8081/api/ticket` by default). |
 | `VITE_LIVE_AGENT_WS_URL`  | `packages/liveAgentPOC`, kiosk ticket bridge | Optional override for the dashboard WebSocket feed; defaults to the same host as `VITE_LIVE_AGENT_API_URL`. |
+| `LIVE_AGENT_TLS_CERT/KEY` | `packages/liveAgentPOC/server` | PEM files for enabling HTTPS/WSS on the ticket bridge (`pnpm --filter liveAgentPOC dev:bridge`). |
 
 ### Live Agent dashboard (`packages/liveAgentPOC`)
 
 Need an operator-facing board with richer ticket context? A dedicated TanStack Start app now ships under `packages/liveAgentPOC`:
 
-1. `pnpm --filter liveAgentPOC dev:bridge` – starts the ticket bridge (`server/websocket-server.js`) on `http://localhost:8081` for HTTP + WebSocket traffic.
-2. `pnpm --filter liveAgentPOC dev` – launches the dashboard UI on `http://localhost:3100`.
-3. Ensure the kiosk is pointing at the bridge (`VITE_LIVE_AGENT_API_URL=http://localhost:8081/api/ticket`).
+1. `pnpm --filter liveAgentPOC dev:bridge` – starts the ticket bridge (`server/websocket-server.js`) on `https://localhost:8081` for HTTPS + secure WebSocket traffic. Set `LIVE_AGENT_TLS_CERT`/`LIVE_AGENT_TLS_KEY` to your mkcert files if they aren’t stored at the project root.
+2. `pnpm --filter liveAgentPOC dev` – launches the dashboard UI on `https://localhost:3100`.
+   - If HTTPS over HTTP/2 keeps crashing on your platform, run the client-only fallback:
+     ```bash
+     DISABLE_NITRO=1 pnpm --filter liveAgentPOC dev --host 0.0.0.0 --port 3100
+     ```
+     This skips Nitro (no server functions / SSR demos) but keeps the Live Agent dashboard fully usable.
+3. Ensure the kiosk is pointing at the bridge (`VITE_LIVE_AGENT_API_URL=https://localhost:8081/api/ticket`).
 4. Log into the dashboard, watch tickets stream in, and press **Start Working** to auto-join the kiosk’s WebRTC session (camera, mic, and shared screen) via the shared signaling server.
 
 > The built-in `/agent` route inside the kiosk app is still handy for quick smoke tests, but the Live Agent dashboard adds ticket filters, metadata, and the new embedded video console for supervisors.
 
 ### Manual test checklist
 
-1. Terminal A: `pnpm dev:signaling-server`
+1. Terminal A: `SIGNALING_TLS_CERT=/absolute/path/to/cert.pem SIGNALING_TLS_KEY=/absolute/path/to/cert-key.pem pnpm dev:signaling-server`
 2. Terminal B: `pnpm dev` (or `pnpm dev:stack` to include the ASR service)
 3. Browser/device 1 (kiosk): open `/`, scroll to **Live Agent Assist**, click **Request Live Agent**, grant camera + screen permissions.
 4. Browser/device 2 (agent): open `/agent`, wait for the new session ID to appear (or paste it), click **Answer**.
@@ -182,9 +190,9 @@ When the kiosk (Computer 1) and the live agent dashboard (Computer 2) run on dif
 
 3. **On the kiosk machine (Computer 1)** create `.env.local` and point it back to the host:
    ```
-   VITE_SIGNALING_HTTP_URL=http://<HOST_IP>:4100
-   VITE_SIGNALING_WS_URL=ws://<HOST_IP>:4100/ws
-   VITE_LIVE_AGENT_API_URL=http://<HOST_IP>:8081/api/ticket
+   VITE_SIGNALING_HTTP_URL=https://<HOST_IP>:4100
+   VITE_SIGNALING_WS_URL=wss://<HOST_IP>:4100/ws
+   VITE_LIVE_AGENT_API_URL=https://<HOST_IP>:8081/api/ticket
    ```
    Then run the kiosk with LAN access:
    ```bash

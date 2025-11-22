@@ -35,12 +35,29 @@ export type SessionSummary = {
   participantCount: number
 }
 
-const defaultHttpUrl =
-  import.meta.env.VITE_SIGNALING_HTTP_URL ?? 'http://localhost:4100'
+const fallbackHttpUrl = 'https://localhost:4100'
+
+function normalizeBaseUrl(raw: string) {
+  return raw.replace(/\/$/, '')
+}
+
+function httpToWs(url: string) {
+  if (url.startsWith('https://')) {
+    return url.replace(/^https:\/\//, 'wss://')
+  }
+  if (url.startsWith('http://')) {
+    return url.replace(/^http:\/\//, 'ws://')
+  }
+  return url
+}
+
+const defaultHttpUrl = normalizeBaseUrl(
+  import.meta.env.VITE_SIGNALING_HTTP_URL ?? fallbackHttpUrl,
+)
 
 const defaultWsUrl =
   import.meta.env.VITE_SIGNALING_WS_URL ??
-  defaultHttpUrl.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:').concat('/ws')
+  `${httpToWs(defaultHttpUrl)}/ws`
 
 export function resolveSignalingHttpUrl() {
   return defaultHttpUrl.replace(/\/$/, '')
