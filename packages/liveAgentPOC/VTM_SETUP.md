@@ -67,14 +67,19 @@ Dashboard will be at: `https://<HOST_IP>:3100`
 
 ### 3. Integrate with Your VTM (Port 3000)
 
-Point the kiosk at the bridge host by adding these entries to `.env.local` on Computer 1:
+Point the kiosk at the bridge host by adding these entries to `.env.local` on Computer 1 (use `docs/lan-env.template` from the repo root as a starter file and update `<HOST_IP>`):
 
 ```
 VITE_LIVE_AGENT_API_URL=https://<HOST_IP>:8081/api/ticket
 VITE_LIVE_AGENT_WS_URL=wss://<HOST_IP>:8081
 VITE_SIGNALING_HTTP_URL=https://<HOST_IP>:4100
 VITE_SIGNALING_WS_URL=wss://<HOST_IP>:4100/ws
+VITE_DISABLE_STUN=1
 ```
+
+> For the Live Agent dashboard project itself, copy `packages/liveAgentPOC/lan-env.template` to `.env.local` on the host machine so the dashboard’s WebSocket + signaling URLs target `https://<HOST_IP>:4100` and `https://<HOST_IP>:8081`.
+> After editing either `.env.local`, restart `pnpm dev:signaling-server`, `pnpm --filter liveAgentPOC dev:bridge`, `pnpm dev`, and `pnpm --filter liveAgentPOC dev --host 0.0.0.0 --port 3100` so all processes pick up the new hosts.
+> Set `VITE_DISABLE_STUN=1` whenever the kiosks are on the same LAN without outbound DNS/Internet access—this keeps the browser from hitting public STUN servers and relies on host-only ICE candidates.
 
 If you need a plain JS snippet instead of the built-in panel, add this code to your VTM application:
 
@@ -186,11 +191,13 @@ curl -X POST https://<HOST_IP>:8081/api/ticket \
 - [ ] Dashboard is running on port 3000
 - [ ] Browser console shows "✅ WebSocket connected to Live Agent server"
 - [ ] Connection indicator shows "Connected" (green)
+- [ ] DevTools → Network → WS lists `wss://<HOST_IP>:8081` (ticket bridge) and `wss://<HOST_IP>:4100/ws` (signaling) as **open**
 
 ### VTM Side
 - [ ] VTM application is running on port 3000 (or the port you chose)
 - [ ] "Live Agent" button is visible
 - [ ] Code is integrated to call `requestLiveAgent()`
+- [ ] Kiosk DevTools → Network → WS confirms `wss://<HOST_IP>:4100/ws` is open instead of `localhost`
 
 ## Expected Flow
 

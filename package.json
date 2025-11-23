@@ -13,7 +13,8 @@
     "dev:frontend": "pnpm dev",
     "dev:asr-service": "cd packages/asr-service && uvicorn main:app --reload --port 8000",
     "dev:signaling-server": "cd packages/signaling-server && pnpm dev",
-    "dev:stack": "bash -c 'pnpm dev:signaling-server & pnpm dev:asr-service & pnpm dev'"
+    "dev:stack": "bash -c 'pnpm dev:signaling-server & pnpm dev:asr-service & pnpm dev'",
+    "dev:agent-client": "cd packages/liveAgentPOC && pnpm dev"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.0.6",

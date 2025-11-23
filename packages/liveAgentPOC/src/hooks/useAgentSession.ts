@@ -111,8 +111,8 @@ export function useAgentSession() {
   }, [cleanupCall])
 
   const handleRemoteTrack = useCallback((event: RTCTrackEvent) => {
-    const trackType = categorizeTrack(event.track)
-    if (trackType === 'audio') {
+    const baseType = categorizeTrack(event.track)
+    if (baseType === 'audio') {
       if (!remoteAudioStreamRef.current) {
         remoteAudioStreamRef.current = new MediaStream()
       }
@@ -126,20 +126,28 @@ export function useAgentSession() {
       return
     }
 
-    if (trackType === 'screen') {
-      const stream = event.streams[0] ?? new MediaStream([event.track])
+    const stream = event.streams[0] ?? new MediaStream([event.track])
+
+    const inferredTrackType =
+      baseType === 'camera' &&
+      remoteCameraStreamRef.current &&
+      stream.id !== remoteCameraStreamRef.current.id
+        ? 'screen'
+        : baseType
+
+    if (inferredTrackType === 'screen') {
       remoteScreenStreamRef.current = stream
       setRemoteScreenStream(stream)
       return
     }
 
-    const stream = event.streams[0] ?? new MediaStream([event.track])
     remoteCameraStreamRef.current = stream
     setRemoteCameraStream(stream)
   }, [])
 
   const handleSignalingMessage = useCallback(
     async (message: SignalingMessage) => {
+      console.log('[agent signaling] received', message.type, message)
       if (message.type === 'peer-update' || message.type === 'heartbeat') {
         return
       }
@@ -159,17 +167,23 @@ export function useAgentSession() {
 
       try {
         if (message.type === 'offer' && message.payload) {
+          console.log('[agent signaling] applying offer')
           await peer.setRemoteDescription(message.payload)
+          console.log('[agent signaling] creating answer')
           const answer = await peer.createAnswer()
           await peer.setLocalDescription(answer)
+          console.log('[agent signaling] sending answer')
           sendSignal({ type: 'answer', payload: answer })
           setCallState('connected')
         } else if (message.type === 'ice' && message.payload) {
+          console.log('[agent signaling] adding ICE candidate')
           await peer.addIceCandidate(message.payload)
         } else if (message.type === 'hangup') {
+          console.log('[agent signaling] kiosk hung up')
           cleanupCall('Kiosk disconnected', 'idle', false)
         }
       } catch (error) {
+        console.error('[agent signaling] error handling message', error)
         cleanupCall(
           error instanceof Error
             ? error.message

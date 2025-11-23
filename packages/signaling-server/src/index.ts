@@ -33,7 +33,6 @@ app.use(cors())
 app.use(express.json())
 
 const PORT = Number(process.env.SIGNALING_PORT ?? process.env.PORT ?? 4100)
-
 const defaultStuns = [
   'stun:stun.l.google.com:19302',
   'stun:stun1.l.google.com:19302',
@@ -93,8 +92,8 @@ app.delete('/sessions/:id', (req, res) => {
 })
 
 function createServerWithOptionalTls() {
-  const certPath = process.env.SIGNALING_TLS_CERT
-  const keyPath = process.env.SIGNALING_TLS_KEY
+  const certPath = './cert.pem'
+  const keyPath = './cert-key.pem'
 
   if (!certPath || !keyPath) {
     console.warn(
@@ -266,4 +265,3 @@ server.listen(PORT, () => {
     `Signaling server listening on ${protocol}://localhost:${PORT} (${protocol === 'https' ? 'wss' : 'ws'} available at ${protocol === 'https' ? 'wss' : 'ws'}://localhost:${PORT}/ws)`,
   )
 })
-

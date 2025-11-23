@@ -6,10 +6,50 @@ import http from 'http'
 import https from 'https'
 import { WebSocketServer } from 'ws'
 
+// Minimal .env loader so the bridge can pick up LIVE_AGENT_* vars
+function loadEnvFromFile(filename) {
+  try {
+    const contents = fs.readFileSync(filename, 'utf-8')
+    contents
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith('#'))
+      .forEach((line) => {
+        const idx = line.indexOf('=')
+        if (idx === -1) return
+        const key = line.slice(0, idx).trim()
+        let value = line.slice(idx + 1).trim()
+        // Strip optional surrounding quotes
+        if (
+          (value.startsWith('"') && value.endsWith('"')) ||
+          (value.startsWith("'") && value.endsWith("'"))
+        ) {
+          value = value.slice(1, -1)
+        }
+        if (!(key in process.env)) {
+          process.env[key] = value
+        }
+      })
+  } catch {
+    // Ignore missing or unreadable env files
+  }
+}
+
+// Load env from standard Vite-style locations in the package root
+loadEnvFromFile('.env')
+loadEnvFromFile('.env.local')
+
 const PORT = Number(process.env.LIVE_AGENT_PORT ?? 8081)
 const certPath = process.env.LIVE_AGENT_TLS_CERT
 const keyPath = process.env.LIVE_AGENT_TLS_KEY
 const useHttps = Boolean(certPath && keyPath)
+
+console.log('🔧 Live Agent bridge config:')
+console.log('  LIVE_AGENT_PORT:', PORT)
+console.log('  LIVE_AGENT_TLS_CERT:', certPath ?? '(not set)')
+console.log('  LIVE_AGENT_TLS_KEY:', keyPath ?? '(not set)')
+console.log('  CWD:', process.cwd())
+console.log('  TLS requested:', useHttps ? 'yes' : 'no (missing cert/key)')
 
 // Store connected clients
 const clients = new Set()
@@ -87,8 +127,29 @@ const wsProtocol = protocol === 'https' ? 'wss' : 'ws'
 // Create WebSocket server
 const wss = new WebSocketServer({ server })
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  const socket = req?.socket
+  const remoteAddress = socket?.remoteAddress ?? 'unknown'
+  const remotePort = socket?.remotePort ?? 'unknown'
+  const forwardedFor = req?.headers?.['x-forwarded-for']
+  const origin = req?.headers?.origin
+  const userAgent = req?.headers?.['user-agent']
+  const isTls = socket && 'encrypted' in socket && socket.encrypted === true
+
   console.log('✅ Live Agent dashboard connected')
+  console.log('   ↳ Remote address:', remoteAddress, 'port:', remotePort)
+  if (forwardedFor) {
+    console.log('   ↳ X-Forwarded-For:', forwardedFor)
+  }
+  if (origin) {
+    console.log('   ↳ Origin:', origin)
+  }
+  if (userAgent) {
+    console.log('   ↳ User-Agent:', userAgent)
+  }
+  console.log('   ↳ Transport:', isTls ? 'TLS (wss)' : 'TCP (ws)')
+  console.log('   ↳ Request URL:', req?.url ?? '(unknown)')
+
   clients.add(ws)
 
   // Send connection confirmation
@@ -149,9 +210,12 @@ server.listen(PORT, () => {
   console.log('='.repeat(60))
   console.log('🚀 Live Agent Server Started')
   console.log('='.repeat(60))
-  console.log(`📡 WebSocket server: ${wsProtocol}://localhost:${PORT}`)
-  console.log(`🌐 HTTP API server: ${protocol}://localhost:${PORT}`)
-  console.log(`📮 VTM endpoint: ${protocol}://localhost:${PORT}/api/ticket`)
+  console.log(
+    `🔐 TLS: ${protocol === 'https' ? 'ENABLED (HTTPS/WSS)' : 'DISABLED (HTTP/WS)'}`,
+  )
+  console.log(`📡 WebSocket server: ${wsProtocol}://0.0.0.0:${PORT}`)
+  console.log(`🌐 HTTP API server: ${protocol}://0.0.0.0:${PORT}`)
+  console.log(`📮 VTM endpoint: ${protocol}://0.0.0.0:${PORT}/api/ticket`)
   console.log('='.repeat(60))
   console.log('Waiting for connections...')
   console.log('')

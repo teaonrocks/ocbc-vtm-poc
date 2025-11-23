@@ -396,6 +396,7 @@ function LiveAgentAssistPanel({
   const remoteScreenStreamRef = useRef<MediaStream | null>(null)
   const remoteAudioStreamRef = useRef<MediaStream | null>(null)
   const annotationChannelRef = useRef<RTCDataChannel | null>(null)
+  const lastOfferRef = useRef<RTCSessionDescriptionInit | null>(null)
   const textDecoderRef = useRef<TextDecoder | null>(null)
 
   useEffect(() => {
@@ -505,6 +506,7 @@ function LiveAgentAssistPanel({
       setRemoteFeeds({ camera: null, screen: null })
       setRemoteAudioVersion((prev) => prev + 1)
       setParticipantCount(1)
+      lastOfferRef.current = null
       setSessionId(null)
       setAnnotations([])
       pendingSignalsRef.current = []
@@ -628,6 +630,19 @@ function LiveAgentAssistPanel({
         const participants = Number(message.payload.participants)
         if (!Number.isNaN(participants)) {
           setParticipantCount(participants)
+          if (
+            message.senderRole === 'agent' &&
+            participants > 1 &&
+            lastOfferRef.current
+          ) {
+            console.log(
+              '[live-agent] Agent joined; replaying offer to ensure negotiation starts.',
+            )
+            sendSignal({
+              type: 'offer',
+              payload: lastOfferRef.current,
+            })
+          }
         }
         return
       }
@@ -668,7 +683,7 @@ function LiveAgentAssistPanel({
         )
       }
     },
-    [cleanupLiveAgent],
+    [cleanupLiveAgent, sendSignal],
   )
 
   const startLiveAgentSession = useCallback(async () => {
@@ -827,6 +842,7 @@ function LiveAgentAssistPanel({
           try {
             const offer = await peer.createOffer()
             await peer.setLocalDescription(offer)
+            lastOfferRef.current = offer
             sendSignal({ type: 'offer', payload: offer })
           } catch (err) {
             cleanupLiveAgent(

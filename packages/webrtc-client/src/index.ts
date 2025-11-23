@@ -37,6 +37,63 @@ export type SessionSummary = {
 
 const fallbackHttpUrl = 'https://localhost:4100'
 
+const WEBRTC_LOG_PREFIX = '[webrtc-client]'
+
+function debugLog(...args: unknown[]) {
+  if (typeof console === 'undefined') {
+    return
+  }
+  if (typeof console.debug === 'function') {
+    console.debug(WEBRTC_LOG_PREFIX, ...args)
+    return
+  }
+  console.log(WEBRTC_LOG_PREFIX, ...args)
+}
+
+function errorLog(...args: unknown[]) {
+  if (typeof console === 'undefined') {
+    return
+  }
+  if (typeof console.error === 'function') {
+    console.error(WEBRTC_LOG_PREFIX, ...args)
+    return
+  }
+  console.log(WEBRTC_LOG_PREFIX, ...args)
+}
+
+function summarizeIceCandidate(candidate: RTCIceCandidate | null) {
+  if (!candidate) {
+    return '⛔️ No candidate (end of gathering)'
+  }
+  const {
+    candidate: raw,
+    sdpMid,
+    sdpMLineIndex,
+    foundation,
+    component,
+    priority,
+    protocol,
+    type,
+    relatedAddress,
+    relatedPort,
+    usernameFragment,
+  } = candidate
+
+  return {
+    type: type ?? 'unknown',
+    protocol,
+    foundation,
+    component,
+    priority,
+    sdpMid,
+    sdpMLineIndex,
+    relatedAddress,
+    relatedPort,
+    usernameFragment,
+    raw,
+  }
+}
+
 function normalizeBaseUrl(raw: string) {
   return raw.replace(/\/$/, '')
 }
@@ -56,8 +113,28 @@ const defaultHttpUrl = normalizeBaseUrl(
 )
 
 const defaultWsUrl =
-  import.meta.env.VITE_SIGNALING_WS_URL ??
-  `${httpToWs(defaultHttpUrl)}/ws`
+  import.meta.env.VITE_SIGNALING_WS_URL ?? `${httpToWs(defaultHttpUrl)}/ws`
+
+type MaybeEnv = {
+  env?: Record<string, string | boolean | undefined>
+}
+
+function parseBooleanEnv(value: unknown) {
+  if (typeof value === 'boolean') {
+    return value
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    return normalized === '1' || normalized === 'true' || normalized === 'yes'
+  }
+  return false
+}
+
+const disableStunEnv =
+  (import.meta as MaybeEnv)?.env?.VITE_DISABLE_STUN ??
+  (import.meta as MaybeEnv)?.env?.VITE_DISABLE_ICE
+
+const stunDisabled = parseBooleanEnv(disableStunEnv)
 
 export function resolveSignalingHttpUrl() {
   return defaultHttpUrl.replace(/\/$/, '')
@@ -157,11 +234,17 @@ export function buildPeerConnection({
 
   // Validate and normalize ICE servers
   const normalizedIceServers = (() => {
+    if (stunDisabled) {
+      debugLog(
+        'STUN discovery disabled via VITE_DISABLE_STUN; forcing host-only ICE candidates.',
+      )
+      return []
+    }
     if (!iceServers || iceServers.length === 0) {
       console.warn('No ICE servers provided, using defaults')
       return defaultIceServers()
     }
-    
+
     // Validate each ICE server entry
     const valid = iceServers.filter((server) => {
       if (!server || typeof server !== 'object') {
@@ -181,16 +264,19 @@ export function buildPeerConnection({
       }
       return isValid
     })
-    
+
     if (valid.length === 0) {
       console.warn('No valid ICE servers found, using defaults')
       return defaultIceServers()
     }
-    
+
     return valid
   })()
 
-  console.log('Creating RTCPeerConnection with normalized ICE servers:', normalizedIceServers)
+  debugLog(
+    'Creating RTCPeerConnection with normalized ICE servers:',
+    normalizedIceServers,
+  )
 
   let peerConnection: RTCPeerConnection
   try {
@@ -200,13 +286,16 @@ export function buildPeerConnection({
   } catch (error) {
     const errorMessage =
       error instanceof Error ? error.message : 'Unknown error'
-    console.error('RTCPeerConnection creation failed with provided ICE servers:', error)
+    console.error(
+      'RTCPeerConnection creation failed with provided ICE servers:',
+      error,
+    )
     console.error('Error details:', {
       message: errorMessage,
       iceServers: normalizedIceServers,
       errorType: error?.constructor?.name,
     })
-    
+
     // Try with minimal default ICE servers as fallback
     if (normalizedIceServers.length > 0) {
       console.warn('Retrying with minimal default ICE servers...')
@@ -215,11 +304,18 @@ export function buildPeerConnection({
         peerConnection = new RTCPeerConnection({
           iceServers: minimalServers,
         })
-        console.log('RTCPeerConnection created successfully with fallback ICE servers')
+        debugLog(
+          'RTCPeerConnection created successfully with fallback ICE servers',
+        )
       } catch (fallbackError) {
         const fallbackMessage =
-          fallbackError instanceof Error ? fallbackError.message : 'Unknown error'
-        console.error('RTCPeerConnection creation failed even with fallback servers:', fallbackError)
+          fallbackError instanceof Error
+            ? fallbackError.message
+            : 'Unknown error'
+        errorLog(
+          'RTCPeerConnection creation failed even with fallback servers:',
+          fallbackError,
+        )
         throw new Error(
           `Failed to create RTCPeerConnection: ${errorMessage}. Fallback also failed: ${fallbackMessage}. This may indicate a browser compatibility issue or WebRTC is not properly supported.`,
         )
@@ -232,25 +328,69 @@ export function buildPeerConnection({
   }
 
   peerConnection.onicecandidate = (event) => {
+    debugLog(
+      'ICE candidate event',
+      summarizeIceCandidate(event.candidate ?? null),
+    )
     if (event.candidate) {
       onIceCandidate?.(event.candidate)
+    } else {
+      debugLog('ICE candidate gathering complete')
     }
   }
 
+  peerConnection.onicecandidateerror = (event) => {
+    errorLog('ICE candidate error', {
+      errorCode: event.errorCode,
+      errorText: event.errorText,
+      url: event.url,
+    })
+  }
+
+  peerConnection.oniceconnectionstatechange = () => {
+    debugLog('ICE connection state changed', peerConnection.iceConnectionState)
+  }
+
+  peerConnection.onicegatheringstatechange = () => {
+    debugLog('ICE gathering state changed', peerConnection.iceGatheringState)
+  }
+
+  peerConnection.onsignalingstatechange = () => {
+    debugLog('Signaling state changed', peerConnection.signalingState)
+  }
+
+  peerConnection.onnegotiationneeded = () => {
+    debugLog('Negotiation needed event fired')
+  }
+
   peerConnection.ontrack = (event) => {
+    debugLog('Remote track received', {
+      id: event.track.id,
+      kind: event.track.kind,
+      label: event.track.label,
+      streamIds: event.streams.map((stream) => stream.id),
+    })
     onTrack?.(event)
   }
 
   peerConnection.onconnectionstatechange = () => {
-    onConnectionStateChange?.(peerConnection.connectionState)
+    const state = peerConnection.connectionState
+    debugLog('Peer connection state changed', state)
+    onConnectionStateChange?.(state)
+  }
+
+  peerConnection.ondatachannel = (event) => {
+    debugLog('Remote data channel opened', {
+      label: event.channel.label,
+      id: event.channel.id,
+      negotiated: event.channel.negotiated,
+    })
   }
 
   return peerConnection
 }
 
-export async function createCameraStream(
-  constraints?: MediaStreamConstraints,
-) {
+export async function createCameraStream(constraints?: MediaStreamConstraints) {
   if (
     typeof navigator === 'undefined' ||
     !navigator.mediaDevices ||
@@ -297,13 +437,34 @@ export async function createScreenStream(
 }
 
 export function stopStream(stream: MediaStream | null | undefined) {
-  stream?.getTracks().forEach((track) => track.stop())
+  if (!stream) {
+    return
+  }
+  debugLog('Stopping media stream', {
+    id: stream.id,
+    tracks: stream.getTracks().map((track) => ({
+      id: track.id,
+      kind: track.kind,
+      label: track.label,
+      readyState: track.readyState,
+    })),
+  })
+  stream.getTracks().forEach((track) => track.stop())
 }
 
 export function addStreamToPeer(
   peerConnection: RTCPeerConnection,
   stream: MediaStream,
 ) {
+  debugLog('Adding local stream to peer connection', {
+    connectionState: peerConnection.connectionState,
+    streamId: stream.id,
+    tracks: stream.getTracks().map((track) => ({
+      id: track.id,
+      kind: track.kind,
+      label: track.label,
+    })),
+  })
   stream.getTracks().forEach((track) => {
     peerConnection.addTrack(track, stream)
   })
@@ -316,6 +477,32 @@ export function categorizeTrack(track: MediaStreamTrack | null | undefined) {
   if (track.kind === 'audio') {
     return 'audio'
   }
+
+  const hint = track.contentHint?.toLowerCase()
+  if (hint && (hint.includes('screen') || hint.includes('display'))) {
+    return 'screen'
+  }
+
+  const displaySurface = (() => {
+    try {
+      const settings = track.getSettings?.()
+      return typeof settings?.displaySurface === 'string'
+        ? settings.displaySurface.toLowerCase()
+        : null
+    } catch {
+      return null
+    }
+  })()
+  if (
+    displaySurface &&
+    (displaySurface.includes('monitor') ||
+      displaySurface.includes('window') ||
+      displaySurface.includes('application') ||
+      displaySurface.includes('browser'))
+  ) {
+    return 'screen'
+  }
+
   const label = track.label.toLowerCase()
   if (label.includes('screen') || label.includes('display')) {
     return 'screen'
@@ -324,6 +511,12 @@ export function categorizeTrack(track: MediaStreamTrack | null | undefined) {
 }
 
 function defaultIceServers(): RTCIceServer[] {
+  if (stunDisabled) {
+    debugLog(
+      'VITE_DISABLE_STUN is enabled; returning an empty ICE server list (LAN-only mode).',
+    )
+    return []
+  }
   return [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
@@ -449,4 +642,3 @@ export function attachHandlersToChannel(
   wireChannelEvents(channel, handlers)
   return channel
 }
-

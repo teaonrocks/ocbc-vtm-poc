@@ -1,0 +1,7 @@
+# Copy the following values into your local `.env.local` file at the repo root.
+# They ensure the kiosk app talks to the LAN-accessible signaling + ticket services.
+VITE_SIGNALING_HTTP_URL=https://192.168.1.80:4100
+VITE_SIGNALING_WS_URL=wss://192.168.1.80:4100/ws
+VITE_LIVE_AGENT_API_URL=https://192.168.1.80:8081/api/ticket
+VITE_DISABLE_STUN=1
+

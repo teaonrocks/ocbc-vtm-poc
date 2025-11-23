@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { resolveSignalingHttpUrl } from '@ocbc/webrtc-client'
 import { useTicketWebSocket } from '../hooks/useTicketWebSocket'
 import TicketCard from '../components/TicketCard'
 import TicketDetailModal from '../components/TicketDetailModal'
@@ -28,18 +29,38 @@ function HomePage() {
     hangUp,
   } = useAgentSession()
 
-  const filteredTickets = tickets.filter(ticket => 
-    statusFilter === 'all' || ticket.status === statusFilter
+  useEffect(() => {
+    // Debug logging for signaling configuration
+    console.log(
+      '[LiveAgentPOC] VITE_SIGNALING_HTTP_URL:',
+      import.meta.env.VITE_SIGNALING_HTTP_URL,
+    )
+    console.log(
+      '[LiveAgentPOC] Resolved signaling HTTP URL:',
+      resolveSignalingHttpUrl(),
+    )
+  }, [])
+
+  const filteredTickets = tickets.filter(
+    (ticket) => statusFilter === 'all' || ticket.status === statusFilter,
   )
 
-  const pendingCount = tickets.filter(t => t.status === TicketStatus.PENDING).length
-  const inProgressCount = tickets.filter(t => t.status === TicketStatus.IN_PROGRESS).length
-  const resolvedCount = tickets.filter(t => t.status === TicketStatus.RESOLVED).length
+  const pendingCount = tickets.filter(
+    (t) => t.status === TicketStatus.PENDING,
+  ).length
+  const inProgressCount = tickets.filter(
+    (t) => t.status === TicketStatus.IN_PROGRESS,
+  ).length
+  const resolvedCount = tickets.filter(
+    (t) => t.status === TicketStatus.RESOLVED,
+  ).length
 
   const handleStartSession = useCallback(
     async (ticket: Ticket) => {
       if (!ticket.sessionId) {
-        setSessionMessage('This ticket does not include a signaling session yet.')
+        setSessionMessage(
+          'This ticket does not include a signaling session yet.',
+        )
         return
       }
       try {
@@ -102,15 +123,21 @@ function HomePage() {
       <div className="max-w-7xl mx-auto px-6 py-6">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           <div className="bg-white rounded-lg shadow p-6">
-            <div className="text-yellow-600 text-sm font-medium mb-1">PENDING</div>
+            <div className="text-yellow-600 text-sm font-medium mb-1">
+              PENDING
+            </div>
             <div className="text-3xl font-bold">{pendingCount}</div>
           </div>
           <div className="bg-white rounded-lg shadow p-6">
-            <div className="text-blue-600 text-sm font-medium mb-1">IN PROGRESS</div>
+            <div className="text-blue-600 text-sm font-medium mb-1">
+              IN PROGRESS
+            </div>
             <div className="text-3xl font-bold">{inProgressCount}</div>
           </div>
           <div className="bg-white rounded-lg shadow p-6">
-            <div className="text-green-600 text-sm font-medium mb-1">RESOLVED</div>
+            <div className="text-green-600 text-sm font-medium mb-1">
+              RESOLVED
+            </div>
             <div className="text-3xl font-bold">{resolvedCount}</div>
           </div>
         </div>
@@ -184,7 +211,7 @@ function HomePage() {
               <p className="text-gray-500 text-lg">No tickets found</p>
             </div>
           ) : (
-            filteredTickets.map(ticket => (
+            filteredTickets.map((ticket) => (
               <TicketCard
                 key={ticket.id}
                 ticket={ticket}

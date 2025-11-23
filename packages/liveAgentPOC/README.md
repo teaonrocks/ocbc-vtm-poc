@@ -113,10 +113,12 @@ ATM Machine              WebSocket Server           Live Agent Dashboard
 
 To connect ATM and Live Agent on different computers:
 
-1. Find your Live Agent computer's IP address
-2. Update ATM code to use: `https://YOUR_IP:8081/api/ticket`
-3. Ensure both computers are on the same network
-4. Check firewall settings allow connections on ports 8081 (bridge) and 3100 (dashboard)
+1. Find your Live Agent computer's IP address.
+2. Inside this project, copy `lan-env.template` to `.env.local`, replace `<HOST_IP>` with that address, and restart `pnpm --filter liveAgentPOC dev` so the dashboard points at the right signaling + ticket services.
+3. In the kiosk project, copy `docs/lan-env.template` to `.env.local` and update the same `<HOST_IP>` so the VTM sends tickets and WebRTC signaling to the host.
+4. If the LAN has no Internet/DNS, add `VITE_DISABLE_STUN=1` to both `.env.local` files so the browser skips public STUN lookups and uses host-only ICE candidates.
+5. Ensure both computers are on the same network.
+6. Check firewall settings allow connections on ports 8081 (bridge) and 3100 (dashboard).
 
 ---
 

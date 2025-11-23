@@ -5,7 +5,7 @@ import viteReact from '@vitejs/plugin-react'
 import viteTsConfigPaths from 'vite-tsconfig-paths'
 import tailwindcss from '@tailwindcss/vite'
 import { nitro } from 'nitro/vite'
-import fs from 'fs'
+import mkcert from 'vite-plugin-mkcert'
 
 const disableNitro = process.env.DISABLE_NITRO === '1'
 
@@ -22,12 +22,13 @@ const devtoolsEventBusPort = Number(
 
 const config = defineConfig({
   plugins: [
+    mkcert(),
     devtools({
       eventBusConfig: {
         port: devtoolsEventBusPort,
       },
     }),
-    !disableNitro && nitro(),
+
     // this is the plugin that enables path aliases
     viteTsConfigPaths({
       projects: ['./tsconfig.json'],
@@ -36,16 +37,14 @@ const config = defineConfig({
     tanstackStart(),
     viteReact(),
   ].filter(Boolean),
-  server: process.env.LIVE_AGENT_TLS_CERT && process.env.LIVE_AGENT_TLS_KEY
-    ? {
-        host: '0.0.0.0',
-        port: Number(process.env.PORT ?? 3100),
-        https: {
-          key: fs.readFileSync(process.env.LIVE_AGENT_TLS_KEY),
-          cert: fs.readFileSync(process.env.LIVE_AGENT_TLS_CERT),
-        },
-      }
-    : undefined,
+  server: {
+    host: '0.0.0.0',
+    port: Number(process.env.PORT ?? 3100),
+    https: true,
+  },
+  preview: {
+    https: true,
+  },
 })
 
 export default config

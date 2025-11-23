@@ -187,21 +187,33 @@ When the kiosk (Computer 1) and the live agent dashboard (Computer 2) run on dif
    pnpm --filter liveAgentPOC dev --host 0.0.0.0 --port 3100
    ```
    > The bridge listens on `http://0.0.0.0:8081` (tickets + WebSocket) and the dashboard exposes `http://HOST_IP:3100`.
+   > If your kiosk/agent UIs are running over HTTPS (the default), start both the signaling server and ticket bridge with valid TLS certs so they actually serve `https://` / `wss://` endpoints; otherwise, update the env templates below to use `http://` / `ws://` consistently to avoid mixed-content errors. After changing `.env.local`, stop and re-run all four processes (signaling server, ticket bridge, kiosk UI, agent UI) so they pick up the new URLs.
 
-3. **On the kiosk machine (Computer 1)** create `.env.local` and point it back to the host:
+3. **On the kiosk machine (Computer 1)** create `.env.local` and point it back to the host (copy `docs/lan-env.template` as a starting point):
    ```
    VITE_SIGNALING_HTTP_URL=https://<HOST_IP>:4100
    VITE_SIGNALING_WS_URL=wss://<HOST_IP>:4100/ws
    VITE_LIVE_AGENT_API_URL=https://<HOST_IP>:8081/api/ticket
+   VITE_DISABLE_STUN=1
    ```
    Then run the kiosk with LAN access:
    ```bash
    pnpm dev --host 0.0.0.0 --port 3000
    ```
 
-4. **Agent UI**: Either open `http://HOST_IP:3100` (dashboard) or the built-in kiosk route `http://HOST_IP:3000/agent`. Both expect the same `.env.local` entries above so they talk to the host’s signaling server.
+4. **On the live agent dashboard project (`packages/liveAgentPOC`)** copy `lan-env.template` to `.env.local`, update `<HOST_IP>`, and ensure `VITE_LIVE_AGENT_WS_URL` points to the bridge (`wss://<HOST_IP>:8081`) so the dashboard listens to the right WebSocket feed.
 
-5. **Firewall / permissions**: Allow inbound traffic on ports `3000`, `3100`, `4100`, and `8081` on the host machine. All WebRTC peers still negotiate STUN/TURN via the signaling server running on port `4100`.
+5. **Agent UI**: Either open `http://HOST_IP:3100` (dashboard) or the built-in kiosk route `http://HOST_IP:3000/agent`. Both expect the same `.env.local` entries above so they talk to the host’s signaling server.
+
+6. **Firewall / permissions**: Allow inbound traffic on ports `3000`, `3100`, `4100`, and `8081` on the host machine. All WebRTC peers still negotiate STUN/TURN via the signaling server running on port `4100`.
+
+> `VITE_DISABLE_STUN=1` tells the shared WebRTC client to skip public STUN lookups and rely on host candidates only—perfect for offline LAN demos where Google STUN isn’t reachable.
+
+### WebRTC verification checklist
+
+- In both the kiosk and agent browsers, open DevTools → Network → WS and confirm `wss://<HOST_IP>:4100/ws` (signaling) and `wss://<HOST_IP>:8081` (ticket bridge) stay in the **Open** state; refresh if they still point at `localhost`.
+- When starting a Live Agent session, watch DevTools → Console for ICE candidate errors (usually indicate permissions or mixed protocols).
+- After both peers join, ensure the kiosk shows agent camera/screen tiles and the agent dashboard lists **Camera**, **Screen**, and **Audio** tracks under the session details.
 
 ### Annotation overlay
 
