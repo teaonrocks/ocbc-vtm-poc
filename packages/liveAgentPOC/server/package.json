@@ -1,0 +1,13 @@
+{
+  "name": "live-agent-websocket-server",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "WebSocket server for Live Agent ticket management",
+  "main": "websocket-server.js",
+  "scripts": {
+    "start": "node websocket-server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

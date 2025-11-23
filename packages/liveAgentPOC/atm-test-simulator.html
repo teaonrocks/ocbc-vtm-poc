@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ATM Simulator - Test Ticket Sender</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: linear-gradient(to bottom, #E1251B, white);
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+      padding: 30px;
+    }
+
+    h1 {
+      color: #E1251B;
+      margin-bottom: 10px;
+    }
+
+    .subtitle {
+      color: #666;
+      margin-bottom: 30px;
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+    }
+
+    label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #333;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      padding: 12px;
+      border: 2px solid #ddd;
+      border-radius: 8px;
+      font-size: 14px;
+      transition: border-color 0.3s;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: #E1251B;
+    }
+
+    textarea {
+      min-height: 100px;
+      resize: vertical;
+      font-family: inherit;
+    }
+
+    .button-group {
+      display: flex;
+      gap: 12px;
+      margin-top: 30px;
+    }
+
+    button {
+      flex: 1;
+      padding: 16px;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+
+    .btn-primary {
+      background: #E1251B;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: #C41F17;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(225, 37, 27, 0.3);
+    }
+
+    .btn-secondary {
+      background: #f0f0f0;
+      color: #333;
+    }
+
+    .btn-secondary:hover {
+      background: #e0e0e0;
+    }
+
+    .status {
+      margin-top: 20px;
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+
+    .status.success {
+      background: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+    }
+
+    .status.error {
+      background: #f8d7da;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+    }
+
+    .status.info {
+      background: #d1ecf1;
+      color: #0c5460;
+      border: 1px solid #bee5eb;
+    }
+
+    .server-url {
+      background: #f8f9fa;
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      border: 1px solid #ddd;
+    }
+
+    .server-url strong {
+      color: #E1251B;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🏧 ATM Simulator</h1>
+    <p class="subtitle">Test ticket sender for Live Agent system</p>
+
+    <div class="server-url">
+      <strong>Server URL:</strong> <span id="serverUrl">https://localhost:8081/api/ticket</span>
+    </div>
+
+    <form id="ticketForm">
+      <div class="form-group">
+        <label for="atmId">ATM ID</label>
+        <input type="text" id="atmId" value="ATM-001" required>
+      </div>
+
+      <div class="form-group">
+        <label for="customerName">Customer Name (Optional)</label>
+        <input type="text" id="customerName" placeholder="John Doe">
+      </div>
+
+      <div class="form-group">
+        <label for="issueType">Issue Type</label>
+        <select id="issueType" required>
+          <option value="Card Stuck">Card Stuck</option>
+          <option value="Cash Dispense Error">Cash Dispense Error</option>
+          <option value="Receipt Not Printed">Receipt Not Printed</option>
+          <option value="Screen Not Working">Screen Not Working</option>
+          <option value="PIN Entry Problem">PIN Entry Problem</option>
+          <option value="Transaction Failed">Transaction Failed</option>
+          <option value="Other">Other</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="description">Description</label>
+        <textarea id="description" placeholder="Describe the issue in detail..." required></textarea>
+      </div>
+
+      <div class="form-group">
+        <label for="priority">Priority</label>
+        <select id="priority" required>
+          <option value="high">High</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+        </select>
+      </div>
+
+      <div class="button-group">
+        <button type="button" class="btn-secondary" onclick="fillSampleData()">Fill Sample Data</button>
+        <button type="submit" class="btn-primary">🆘 Request Live Agent</button>
+      </div>
+    </form>
+
+    <div id="status" style="display: none;"></div>
+  </div>
+
+  <script>
+    const form = document.getElementById('ticketForm')
+    const statusDiv = document.getElementById('status')
+
+    // You can change this URL to match your Live Agent server
+    const SERVER_URL = 'https://localhost:8081/api/ticket'
+    document.getElementById('serverUrl').textContent = SERVER_URL
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault()
+
+      const ticket = {
+        id: crypto.randomUUID(),
+        atmId: document.getElementById('atmId').value,
+        timestamp: new Date().toISOString(),
+        status: 'pending',
+        customerName: document.getElementById('customerName').value || undefined,
+        issueType: document.getElementById('issueType').value,
+        description: document.getElementById('description').value,
+        priority: document.getElementById('priority').value
+      }
+
+      showStatus('Sending ticket to Live Agent...', 'info')
+
+      try {
+        const response = await fetch(SERVER_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(ticket)
+        })
+
+        const result = await response.json()
+
+        if (response.ok) {
+          showStatus(`✅ Ticket sent successfully! Ticket ID: ${ticket.id.slice(0, 8)}`, 'success')
+          
+          // Clear form after successful submission
+          setTimeout(() => {
+            form.reset()
+            document.getElementById('atmId').value = 'ATM-001'
+          }, 2000)
+        } else {
+          showStatus(`❌ Failed to send ticket: ${result.error || 'Unknown error'}`, 'error')
+        }
+      } catch (error) {
+        showStatus(`❌ Error: ${error.message}. Make sure the server is running!`, 'error')
+        console.error('Error:', error)
+      }
+    })
+
+    function showStatus(message, type) {
+      statusDiv.textContent = message
+      statusDiv.className = `status ${type}`
+      statusDiv.style.display = 'block'
+
+      if (type === 'success') {
+        setTimeout(() => {
+          statusDiv.style.display = 'none'
+        }, 5000)
+      }
+    }
+
+    function fillSampleData() {
+      const samples = [
+        {
+          customerName: 'Alice Johnson',
+          issueType: 'Card Stuck',
+          description: 'My debit card got stuck in the ATM slot after entering my PIN. The screen is showing an error message.',
+          priority: 'high'
+        },
+        {
+          customerName: 'Bob Smith',
+          issueType: 'Cash Dispense Error',
+          description: 'I requested $200 but the ATM only dispensed $150. My account was debited for $200.',
+          priority: 'high'
+        },
+        {
+          customerName: 'Carol Davis',
+          issueType: 'Screen Not Working',
+          description: 'The touch screen is not responding to my touches. I cannot complete my transaction.',
+          priority: 'medium'
+        },
+        {
+          customerName: '',
+          issueType: 'Receipt Not Printed',
+          description: 'Completed withdrawal successfully but the receipt did not print.',
+          priority: 'low'
+        }
+      ]
+
+      const sample = samples[Math.floor(Math.random() * samples.length)]
+      
+      document.getElementById('customerName').value = sample.customerName
+      document.getElementById('issueType').value = sample.issueType
+      document.getElementById('description').value = sample.description
+      document.getElementById('priority').value = sample.priority
+    }
+
+    // Fill sample data on load
+    fillSampleData()
+  </script>
+</body>
+</html>
