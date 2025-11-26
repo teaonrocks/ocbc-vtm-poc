@@ -1,0 +1,1489 @@
+import { createFileRoute } from '@tanstack/react-router'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  AlertCircle,
+  Loader2,
+  Mic,
+  MicOff,
+  MonitorUp,
+  PhoneCall,
+  PhoneOff,
+  Play,
+  Pause,
+  RefreshCw,
+  Volume2,
+} from 'lucide-react'
+import { useBankStore, type BankingAction } from '../data/bank-store'
+import { useLocalAI } from '../hooks/useLocalAI'
+import { analyzeIntent } from '../functions/ai-intent'
+import { AudioVisualizer } from '../components/Dashboard/AudioVisualizer'
+import { ActionCards } from '../components/Dashboard/ActionCards'
+import { synthesizeSpeech } from '../functions/tts'
+import {
+  addStreamToPeer,
+  attachHandlersToChannel,
+  buildPeerConnection,
+  categorizeTrack,
+  connectSignalingSocket,
+  createCameraStream,
+  createScreenStream,
+  createSignalingSession,
+  registerDataChannelHandler,
+  stopStream,
+} from '@ocbc/webrtc-client'
+import type { SignalingMessage } from '@ocbc/webrtc-client'
+import { createLiveAgentTicket } from '../lib/live-agent'
+import { AnnotationOverlay } from '../components/LiveAgent/AnnotationOverlay'
+import type { RenderableAnnotation } from '../components/LiveAgent/AnnotationOverlay'
+import {
+  ANNOTATION_CHANNEL_LABEL,
+  DEFAULT_ANNOTATION_TTL,
+  type AnnotationMessage,
+} from '../types/annotations'
+
+type CallState = 'idle' | 'preparing' | 'connecting' | 'connected' | 'error'
+type SpeechStatus = 'idle' | 'loading' | 'ready' | 'playing' | 'error'
+
+export const Route = createFileRoute('/index/legacy')({ component: Dashboard })
+
+function Dashboard() {
+  const {
+    currentAction,
+    language,
+    isRecording,
+    isProcessing,
+    setCurrentAction,
+    setLanguage,
+    setIsRecording,
+    setIsProcessing,
+    balance,
+    transactions,
+  } = useBankStore()
+
+  const { transcribeAudio, isReady, error: aiError, modelInfo } = useLocalAI()
+  const [error, setError] = useState<string | null>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioStreamRef = useRef<MediaStream | null>(null)
+  const audioPlayerRef = useRef<HTMLAudioElement | null>(null)
+  const speechRequestIdRef = useRef(0)
+  const lastSpeechKeyRef = useRef<string | null>(null)
+  const [voiceEnabled, setVoiceEnabled] = useState(true)
+  const [speechStatus, setSpeechStatus] = useState<SpeechStatus>('idle')
+  const [speechError, setSpeechError] = useState<string | null>(null)
+  const [lastSpeechText, setLastSpeechText] = useState<string | null>(null)
+  const [lastSpeechSource, setLastSpeechSource] = useState<string | null>(null)
+  const [clock, setClock] = useState<Date>(() => new Date())
+
+  const startRecording = useCallback(async () => {
+    try {
+      setError(null)
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      audioStreamRef.current = stream
+
+      const chunks: Array<Blob> = []
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: 'audio/webm;codecs=opus',
+      })
+
+      mediaRecorderRef.current = mediaRecorder
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunks.push(event.data)
+        }
+      }
+
+      mediaRecorder.onstop = async () => {
+        if (audioStreamRef.current) {
+          audioStreamRef.current.getTracks().forEach((track) => track.stop())
+          audioStreamRef.current = null
+        }
+
+        if (chunks.length === 0) {
+          setError('No audio recorded')
+          setIsRecording(false)
+          return
+        }
+
+        setIsProcessing(true)
+        try {
+          const audioBlob = new Blob(chunks, { type: 'audio/webm' })
+          const { text, language: detectedLang } =
+            await transcribeAudio(audioBlob)
+
+          // Update language if detected
+          if (detectedLang && detectedLang !== language) {
+            setLanguage(detectedLang)
+          }
+
+          // Send to server function for intent analysis
+          const intentResult = await analyzeIntent({
+            data: { text, language: detectedLang ?? null },
+          })
+
+          setCurrentAction({
+            intent: intentResult.intent,
+            amount: intentResult.amount,
+            recipient: intentResult.recipient,
+            duration: intentResult.duration,
+            spokenResponse: intentResult.responseText,
+            timestamp: Date.now(),
+          })
+        } catch (err) {
+          console.error('Processing error:', err)
+          setError(
+            err instanceof Error ? err.message : 'Failed to process audio',
+          )
+        } finally {
+          setIsProcessing(false)
+        }
+      }
+
+      mediaRecorder.start()
+      setIsRecording(true)
+    } catch (err) {
+      console.error('Recording error:', err)
+      setError('Failed to access microphone')
+      setIsRecording(false)
+    }
+  }, [
+    transcribeAudio,
+    language,
+    setLanguage,
+    setIsRecording,
+    setIsProcessing,
+    setCurrentAction,
+  ])
+
+  const stopRecording = useCallback(() => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop()
+      setIsRecording(false)
+    }
+  }, [isRecording, setIsRecording])
+
+  useEffect(() => {
+    return () => {
+      if (audioStreamRef.current) {
+        audioStreamRef.current.getTracks().forEach((track) => track.stop())
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(new Date()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  const stopSpeech = useCallback(() => {
+    const audio = audioPlayerRef.current
+    if (!audio) {
+      return
+    }
+    audio.pause()
+    audio.currentTime = 0
+  }, [])
+
+  const playSpeech = useCallback(
+    async (source?: string) => {
+      const audio = audioPlayerRef.current
+      if (!audio) {
+        throw new Error('Audio playback is unavailable in this browser.')
+      }
+      const resolvedSource = source ?? lastSpeechSource
+      if (!resolvedSource) {
+        throw new Error('No speech audio is ready yet.')
+      }
+      if (audio.src !== resolvedSource) {
+        audio.src = resolvedSource
+      }
+      audio.currentTime = 0
+      await audio.play()
+    },
+    [lastSpeechSource],
+  )
+
+  const runSpeechSynthesis = useCallback(
+    async (text: string, requestId: number) => {
+      setSpeechError(null)
+      setSpeechStatus('loading')
+      try {
+        const speech = await synthesizeSpeech({ data: { text } })
+        if (requestId !== speechRequestIdRef.current) {
+          return
+        }
+        setLastSpeechSource(speech.audioDataUrl)
+        setSpeechStatus('ready')
+
+        try {
+          await playSpeech(speech.audioDataUrl)
+          if (requestId === speechRequestIdRef.current) {
+            setSpeechStatus('playing')
+          }
+        } catch (playError) {
+          if (requestId !== speechRequestIdRef.current) {
+            return
+          }
+          setSpeechStatus('ready')
+          setSpeechError(
+            playError instanceof Error
+              ? playError.message
+              : 'Unable to auto-play voice. Tap Play Voice.',
+          )
+        }
+      } catch (err) {
+        if (requestId !== speechRequestIdRef.current) {
+          return
+        }
+        setSpeechStatus('error')
+        setSpeechError(
+          err instanceof Error
+            ? err.message
+            : 'Failed to synthesize kiosk speech.',
+        )
+      }
+    },
+    [playSpeech],
+  )
+
+  const handlePlayVoice = useCallback(async () => {
+    if (!voiceEnabled) {
+      return
+    }
+    try {
+      await playSpeech()
+      setSpeechStatus('playing')
+      setSpeechError(null)
+    } catch (err) {
+      setSpeechStatus(lastSpeechSource ? 'ready' : 'idle')
+      setSpeechError(
+        err instanceof Error
+          ? err.message
+          : 'Unable to play speech. Tap retry to regenerate audio.',
+      )
+    }
+  }, [lastSpeechSource, playSpeech, voiceEnabled])
+
+  const handleStopVoice = useCallback(() => {
+    stopSpeech()
+    setSpeechStatus(lastSpeechSource ? 'ready' : 'idle')
+  }, [lastSpeechSource, stopSpeech])
+
+  const handleRegenerateVoice = useCallback(() => {
+    if (!lastSpeechText || !voiceEnabled) {
+      return
+    }
+    const requestId = ++speechRequestIdRef.current
+    runSpeechSynthesis(lastSpeechText, requestId)
+  }, [lastSpeechText, runSpeechSynthesis, voiceEnabled])
+
+  useEffect(() => {
+    const spokenResponse = currentAction?.spokenResponse?.trim()
+    const actionTimestamp = currentAction?.timestamp
+
+    if (!spokenResponse || !actionTimestamp) {
+      return
+    }
+
+    const responseKey = `${actionTimestamp}:${spokenResponse}`
+    if (lastSpeechKeyRef.current === responseKey) {
+      return
+    }
+    lastSpeechKeyRef.current = responseKey
+
+    setLastSpeechText(spokenResponse)
+    setLastSpeechSource(null)
+    setSpeechError(null)
+
+    const requestId = ++speechRequestIdRef.current
+
+    if (!voiceEnabled) {
+      setSpeechStatus('idle')
+      return
+    }
+
+    stopSpeech()
+    runSpeechSynthesis(spokenResponse, requestId)
+  }, [
+    currentAction?.spokenResponse,
+    currentAction?.timestamp,
+    runSpeechSynthesis,
+    stopSpeech,
+    voiceEnabled,
+  ])
+
+  useEffect(() => {
+    if (voiceEnabled) {
+      return
+    }
+    speechRequestIdRef.current += 1
+    stopSpeech()
+    setSpeechStatus('idle')
+    setSpeechError(null)
+  }, [stopSpeech, voiceEnabled])
+
+  useEffect(() => {
+    const audio = audioPlayerRef.current
+    if (!audio) {
+      return
+    }
+
+    const handleEnded = () => setSpeechStatus('ready')
+    const handlePause = () => setSpeechStatus('ready')
+    const handlePlay = () => setSpeechStatus('playing')
+
+    audio.addEventListener('ended', handleEnded)
+    audio.addEventListener('pause', handlePause)
+    audio.addEventListener('play', handlePlay)
+
+    return () => {
+      audio.removeEventListener('ended', handleEnded)
+      audio.removeEventListener('pause', handlePause)
+      audio.removeEventListener('play', handlePlay)
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      stopSpeech()
+    }
+  }, [stopSpeech])
+
+  const formattedDate = clock.toLocaleDateString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  })
+  const formattedTime = clock.toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+  const topTransactions = transactions.slice(0, 5)
+  const debitVolume = transactions
+    .filter((tx) => tx.type === 'debit')
+    .reduce((sum, tx) => sum + tx.amount, 0)
+  const creditVolume = transactions
+    .filter((tx) => tx.type === 'credit')
+    .reduce((sum, tx) => sum + tx.amount, 0)
+  const totalVolume = Math.max(debitVolume + creditVolume, 1)
+  const spendRatio = Math.min(1, debitVolume / totalVolume)
+  const actionDetectedAt = currentAction
+    ? new Date(currentAction.timestamp).toLocaleTimeString(undefined, {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      })
+    : null
+
+  const modelStatusCopy: Record<typeof modelInfo.status, string> = {
+    loading: 'Loading model…',
+    ready: 'Ready',
+    error: 'Unavailable',
+  }
+  const modelStatusBadgeColors: Record<typeof modelInfo.status, string> = {
+    loading: 'bg-amber-500/15 text-amber-100',
+    ready: 'bg-emerald-500/15 text-emerald-100',
+    error: 'bg-rose-500/15 text-rose-100',
+  }
+  const whisperBackendCopy =
+    modelInfo.backend === 'server'
+      ? 'Remote faster-whisper service'
+      : 'On-device WebGPU pipeline'
+  const whisperValue =
+    modelInfo.name ??
+    (modelInfo.status === 'loading' ? 'Loading Whisper…' : 'Unknown model')
+  const whisperDescription =
+    modelInfo.status === 'error'
+      ? `Error: ${modelInfo.error ?? 'Model unavailable'}`
+      : `${modelStatusCopy[modelInfo.status]} · ${whisperBackendCopy}`
+
+  const heroHighlights = [
+    {
+      label: 'Whisper model',
+      value: whisperValue,
+      description: whisperDescription,
+    },
+    {
+      label: 'Language',
+      value: language.toUpperCase(),
+      description: 'Auto-detected locale',
+    },
+    {
+      label: 'Intent engine',
+      value: isProcessing
+        ? 'Analyzing'
+        : currentAction
+          ? 'Awaiting confirmation'
+          : 'Listening',
+      description: currentAction
+        ? `Detected ${currentAction.intent}`
+        : 'Say your request when ready',
+    },
+  ]
+
+  const speechStatusCopy: Record<SpeechStatus, string> = {
+    idle: voiceEnabled ? 'Voice idle' : 'Voice muted',
+    loading: 'Generating audio',
+    ready: 'Voice ready',
+    playing: 'Speaking now',
+    error: 'Voice unavailable',
+  }
+
+  const speechStatusIndicator = (() => {
+    if (speechStatus === 'loading') {
+      return <Loader2 className="h-3 w-3 animate-spin text-amber-200" />
+    }
+    if (speechStatus === 'error') {
+      return <AlertCircle className="h-3 w-3 text-rose-200" />
+    }
+    if (speechStatus === 'playing') {
+      return <Volume2 className="h-3 w-3 text-emerald-200" />
+    }
+    if (!voiceEnabled) {
+      return <Volume2 className="h-3 w-3 text-slate-500" />
+    }
+    return <Volume2 className="h-3 w-3 text-cyan-200" />
+  })()
+
+  const hasSpeechAudio = Boolean(lastSpeechSource)
+  const playButtonDisabled =
+    !voiceEnabled ||
+    speechStatus === 'loading' ||
+    (!hasSpeechAudio && speechStatus !== 'playing')
+
+  const regenerateDisabled =
+    !voiceEnabled || !lastSpeechText || speechStatus === 'loading'
+
+  const voicePrompts = [
+    { title: 'Remittance', sample: '"Send $1000 to John Doe"' },
+    { title: 'Loan', sample: '"Apply for $5000 loan for 12 months"' },
+    { title: 'Card App', sample: '"Apply for a new card"' },
+    { title: 'Update Book', sample: '"Update my bank book"' },
+    { title: 'Card Replace', sample: '"Replace my card"' },
+  ]
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-white">
+      <audio ref={audioPlayerRef} className="hidden" aria-hidden="true" />
+      <div className="mx-auto max-w-6xl space-y-10 px-4 py-10">
+        <header className="space-y-3">
+          <p className="text-xs uppercase tracking-[0.4em] text-slate-500">
+            OCBC Virtual Teller
+          </p>
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <h1 className="text-3xl font-semibold">Smart Banking Kiosk</h1>
+              <p className="text-slate-400">
+                Voice-powered banking with local AI.
+              </p>
+            </div>
+            <div className="text-right text-sm text-slate-400">
+              <p>{formattedDate}</p>
+              <p className="text-2xl font-semibold text-white">
+                {formattedTime}
+              </p>
+            </div>
+          </div>
+        </header>
+
+        <section className="grid gap-4 sm:grid-cols-3">
+          {heroHighlights.map((item) => (
+            <div
+              key={item.label}
+              className="rounded-xl border border-slate-800 bg-slate-900/40 p-4"
+            >
+              <p className="text-xs uppercase tracking-[0.35em] text-slate-500">
+                {item.label}
+              </p>
+              <p className="mt-2 text-xl font-semibold text-white">
+                {item.value}
+              </p>
+              <p className="text-sm text-slate-400">{item.description}</p>
+            </div>
+          ))}
+        </section>
+
+        <section className="grid gap-6 lg:grid-cols-[2fr_1fr]">
+          <div className="space-y-6">
+            <div className="space-y-6 rounded-xl border border-slate-800 bg-slate-900/40 p-6">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.35em] text-slate-500">
+                    Voice input
+                  </p>
+                  <h2 className="text-2xl font-semibold text-white">
+                    Hands-free banking
+                  </h2>
+                </div>
+                <span
+                  className={`rounded-full px-3 py-1 text-xs font-semibold ${isRecording ? 'bg-red-500/20 text-red-200' : 'bg-slate-800 text-slate-300'}`}
+                >
+                  {isRecording ? 'Recording' : 'Idle'}
+                </span>
+              </div>
+
+              <AudioVisualizer
+                audioStream={audioStreamRef.current || null}
+                isRecording={isRecording}
+              />
+
+              <div className="rounded-lg border border-slate-800 bg-slate-950/40 px-4 py-3 text-sm">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.35em] text-slate-500">
+                      Whisper backend
+                    </p>
+                    <p className="text-base font-semibold text-white">
+                      {modelInfo.name ?? 'Detecting…'}
+                    </p>
+                    <p className="text-xs text-slate-400">
+                      {whisperBackendCopy}
+                    </p>
+                  </div>
+                  <span
+                    className={`rounded-full px-3 py-1 text-xs font-semibold ${modelStatusBadgeColors[modelInfo.status]}`}
+                  >
+                    {modelStatusCopy[modelInfo.status]}
+                  </span>
+                </div>
+                {modelInfo.error && (
+                  <p className="mt-2 text-xs text-rose-200">
+                    {modelInfo.error}
+                  </p>
+                )}
+              </div>
+
+              {error && (
+                <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+                  {error}
+                </div>
+              )}
+              {aiError && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
+                  AI Error: {aiError}
+                </div>
+              )}
+
+              {isProcessing ? (
+                <div className="flex items-center gap-2 text-sm text-slate-300">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Processing your last command...
+                </div>
+              ) : (
+                <button
+                  onClick={isRecording ? stopRecording : startRecording}
+                  disabled={!isReady}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-700 px-4 py-3 text-sm font-semibold text-white transition hover:border-slate-500 disabled:border-slate-800 disabled:text-slate-500"
+                >
+                  {isRecording ? (
+                    <>
+                      <MicOff size={18} />
+                      Stop recording
+                    </>
+                  ) : (
+                    <>
+                      <Mic size={18} />
+                      Start recording
+                    </>
+                  )}
+                </button>
+              )}
+
+              <p className="text-sm text-slate-500">
+                {isRecording
+                  ? 'Speak your request clearly. We stop listening as soon as you tap stop.'
+                  : 'Press start and say what you need—no menus required.'}
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-6 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.35em] text-slate-500">
+                    Kiosk voice
+                  </p>
+                  <h3 className="text-xl font-semibold text-white">
+                    Spoken guidance
+                  </h3>
+                </div>
+                <label className="inline-flex items-center gap-2 text-xs font-semibold text-white">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 accent-cyan-500"
+                    checked={voiceEnabled}
+                    onChange={(event) => setVoiceEnabled(event.target.checked)}
+                  />
+                  {voiceEnabled ? 'Voice on' : 'Muted'}
+                </label>
+              </div>
+
+              <p className="text-sm text-slate-400 min-h-[3rem]">
+                {lastSpeechText ?? 'No AI response yet.'}
+              </p>
+
+              <div className="flex flex-wrap gap-3 text-sm">
+                <button
+                  onClick={
+                    speechStatus === 'playing'
+                      ? handleStopVoice
+                      : handlePlayVoice
+                  }
+                  disabled={playButtonDisabled}
+                  className="inline-flex flex-1 min-w-[9rem] items-center justify-center gap-2 rounded-lg border border-slate-700 px-4 py-2 font-semibold text-white transition hover:border-slate-500 disabled:cursor-not-allowed disabled:border-slate-800 disabled:text-slate-500"
+                >
+                  {speechStatus === 'playing' ? (
+                    <>
+                      <Pause size={16} />
+                      Pause voice
+                    </>
+                  ) : (
+                    <>
+                      <Play size={16} />
+                      Play voice
+                    </>
+                  )}
+                </button>
+                <button
+                  onClick={handleRegenerateVoice}
+                  disabled={regenerateDisabled}
+                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-700 px-4 py-2 font-semibold text-white transition hover:border-slate-500 disabled:cursor-not-allowed disabled:border-slate-800 disabled:text-slate-500"
+                >
+                  <RefreshCw size={16} />
+                  Refresh audio
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2 text-xs text-slate-400">
+                {speechStatusIndicator}
+                <span>{speechStatusCopy[speechStatus]}</span>
+              </div>
+
+              {speechError && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                  {speechError}
+                </div>
+              )}
+            </div>
+
+            {currentAction ? (
+              <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-6">
+                <div className="mb-4 flex items-center justify-between text-xs uppercase tracking-[0.35em] text-slate-500">
+                  <span>Detected intent</span>
+                  {actionDetectedAt && <span>{actionDetectedAt}</span>}
+                </div>
+                {currentAction.spokenResponse && (
+                  <p className="mb-4 text-sm text-slate-400">
+                    {currentAction.spokenResponse}
+                  </p>
+                )}
+                <ActionCards action={currentAction} />
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed border-slate-800 bg-slate-900/30 p-6 text-center">
+                <p className="text-sm text-slate-400">
+                  No request captured yet. Start recording to describe what you
+                  need help with.
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-6">
+            <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <p className="text-xs uppercase tracking-[0.35em] text-slate-500">
+                  Account summary
+                </p>
+                <span className="text-xs text-slate-500">
+                  {transactions.length} transactions
+                </span>
+              </div>
+              <p className="text-3xl font-semibold text-white">
+                ${balance.toLocaleString()}
+              </p>
+              <div className="grid gap-3 text-sm text-slate-400 sm:grid-cols-2">
+                <div>
+                  <p className="text-slate-500">Credits</p>
+                  <p className="text-lg font-medium text-emerald-300">
+                    +${creditVolume.toLocaleString()}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-slate-500">Debits</p>
+                  <p className="text-lg font-medium text-rose-300">
+                    -${debitVolume.toLocaleString()}
+                  </p>
+                </div>
+              </div>
+              <div className="text-sm text-slate-400">
+                {currentAction
+                  ? `Latest intent: ${currentAction.intent}`
+                  : 'Waiting for the next action'}
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-6">
+              <div className="flex items-center justify-between">
+                <p className="text-xs uppercase tracking-[0.35em] text-slate-500">
+                  Recent transactions
+                </p>
+                <span className="text-xs text-slate-500">
+                  showing {topTransactions.length}
+                </span>
+              </div>
+              <div className="mt-4 space-y-3 text-sm">
+                {topTransactions.map((tx) => (
+                  <div
+                    key={tx.id}
+                    className="flex items-center justify-between rounded-lg border border-slate-800 px-3 py-2"
+                  >
+                    <div>
+                      <p className="font-medium text-white">{tx.description}</p>
+                      <p className="text-xs text-slate-500">
+                        {new Date(tx.timestamp).toLocaleDateString()} ·{' '}
+                        {tx.recipient ?? 'Self-service'}
+                      </p>
+                    </div>
+                    <p
+                      className={`text-sm font-semibold ${tx.type === 'credit' ? 'text-emerald-300' : 'text-rose-300'}`}
+                    >
+                      {tx.type === 'credit' ? '+' : '-'}$
+                      {tx.amount.toLocaleString()}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <LiveAgentAssistPanel
+              currentAction={currentAction}
+              language={language}
+            />
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-6">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <p className="text-xs uppercase tracking-[0.35em] text-slate-500">
+                Voice prompts
+              </p>
+              <h3 className="text-xl font-semibold text-white">
+                Try a ready-made phrase
+              </h3>
+            </div>
+            <p className="text-xs text-slate-500">
+              Speak in {language.toUpperCase()} or let us detect automatically.
+            </p>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+            {voicePrompts.map((prompt) => (
+              <div
+                key={prompt.title}
+                className="rounded-lg border border-slate-800 bg-slate-900/30 p-4"
+              >
+                <p className="text-xs uppercase tracking-[0.3em] text-slate-500">
+                  {prompt.title}
+                </p>
+                <p className="mt-2 text-sm text-white">{prompt.sample}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+    </div>
+  )
+}
+
+function LiveAgentAssistPanel({
+  currentAction,
+  language,
+}: {
+  currentAction: BankingAction | null
+  language: string
+}) {
+  const [callState, setCallState] = useState<CallState>('idle')
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [callError, setCallError] = useState<string | null>(null)
+  const [participantCount, setParticipantCount] = useState(1)
+  const [localMedia, setLocalMedia] = useState<{
+    camera: MediaStream | null
+    screen: MediaStream | null
+  }>({ camera: null, screen: null })
+  const [remoteFeeds, setRemoteFeeds] = useState<{
+    camera: MediaStream | null
+    screen: MediaStream | null
+  }>({ camera: null, screen: null })
+  const [remoteAudioVersion, setRemoteAudioVersion] = useState(0)
+  const [annotations, setAnnotations] = useState<RenderableAnnotation[]>([])
+  const [annotationsEnabled, setAnnotationsEnabled] = useState(true)
+
+  const wsRef = useRef<WebSocket | null>(null)
+  const pcRef = useRef<RTCPeerConnection | null>(null)
+  const pendingSignalsRef = useRef<Array<SignalingMessage>>([])
+  const localVideoRef = useRef<HTMLVideoElement | null>(null)
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null)
+  const remoteScreenRef = useRef<HTMLVideoElement | null>(null)
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null)
+
+  const localCameraStreamRef = useRef<MediaStream | null>(null)
+  const localScreenStreamRef = useRef<MediaStream | null>(null)
+  const remoteCameraStreamRef = useRef<MediaStream | null>(null)
+  const remoteScreenStreamRef = useRef<MediaStream | null>(null)
+  const remoteAudioStreamRef = useRef<MediaStream | null>(null)
+  const annotationChannelRef = useRef<RTCDataChannel | null>(null)
+  const lastOfferRef = useRef<RTCSessionDescriptionInit | null>(null)
+  const textDecoderRef = useRef<TextDecoder | null>(null)
+
+  useEffect(() => {
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = localMedia.camera ?? null
+    }
+  }, [localMedia.camera])
+
+  useEffect(() => {
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = remoteFeeds.camera ?? null
+    }
+  }, [remoteFeeds.camera])
+
+  useEffect(() => {
+    if (remoteScreenRef.current) {
+      remoteScreenRef.current.srcObject = remoteFeeds.screen ?? null
+    }
+  }, [remoteFeeds.screen])
+
+  useEffect(() => {
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.srcObject = remoteAudioStreamRef.current ?? null
+    }
+  }, [remoteAudioVersion])
+
+  useEffect(() => {
+    if (annotations.length === 0) {
+      return
+    }
+    const interval = window.setInterval(() => {
+      setAnnotations((prev) =>
+        prev.filter(
+          (annotation) =>
+            Date.now() - annotation.createdAt <
+            (annotation.ttlMs ?? DEFAULT_ANNOTATION_TTL),
+        ),
+      )
+    }, 2000)
+    return () => {
+      window.clearInterval(interval)
+    }
+  }, [annotations.length])
+
+  const sendSignal = useCallback((message: SignalingMessage) => {
+    const socket = wsRef.current
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      pendingSignalsRef.current = [...pendingSignalsRef.current, message]
+      return
+    }
+    socket.send(JSON.stringify(message))
+  }, [])
+
+  const flushPendingSignals = useCallback(() => {
+    const socket = wsRef.current
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return
+    }
+    if (pendingSignalsRef.current.length === 0) {
+      return
+    }
+    pendingSignalsRef.current.forEach((message) => {
+      socket.send(JSON.stringify(message))
+    })
+    pendingSignalsRef.current = []
+  }, [])
+
+  const cleanupLiveAgent = useCallback(
+    (
+      reason?: string,
+      nextState: CallState = 'idle',
+      closeSocket: boolean = true,
+    ) => {
+      if (closeSocket && wsRef.current) {
+        wsRef.current.onclose = null
+        wsRef.current.close()
+      }
+      wsRef.current = null
+
+      if (pcRef.current) {
+        pcRef.current.onicecandidate = null
+        pcRef.current.ontrack = null
+        pcRef.current.onconnectionstatechange = null
+        pcRef.current.close()
+      }
+      pcRef.current = null
+
+      if (annotationChannelRef.current) {
+        annotationChannelRef.current.onmessage = null
+        annotationChannelRef.current.close()
+      }
+      annotationChannelRef.current = null
+
+      stopStream(localCameraStreamRef.current)
+      stopStream(localScreenStreamRef.current)
+      stopStream(remoteCameraStreamRef.current)
+      stopStream(remoteScreenStreamRef.current)
+      stopStream(remoteAudioStreamRef.current)
+
+      localCameraStreamRef.current = null
+      localScreenStreamRef.current = null
+      remoteCameraStreamRef.current = null
+      remoteScreenStreamRef.current = null
+      remoteAudioStreamRef.current = null
+
+      setLocalMedia({ camera: null, screen: null })
+      setRemoteFeeds({ camera: null, screen: null })
+      setRemoteAudioVersion((prev) => prev + 1)
+      setParticipantCount(1)
+      lastOfferRef.current = null
+      setSessionId(null)
+      setAnnotations([])
+      pendingSignalsRef.current = []
+
+      if (reason) {
+        setCallError(reason)
+      } else {
+        setCallError(null)
+      }
+
+      setCallState(nextState)
+    },
+    [],
+  )
+
+  useEffect(() => {
+    return () => {
+      cleanupLiveAgent()
+    }
+  }, [cleanupLiveAgent])
+
+  const handleRemoteTrack = useCallback((event: RTCTrackEvent) => {
+    const trackType = categorizeTrack(event.track)
+    if (trackType === 'audio') {
+      if (!remoteAudioStreamRef.current) {
+        remoteAudioStreamRef.current = new MediaStream()
+      }
+      const alreadyAdded = remoteAudioStreamRef.current
+        .getTracks()
+        .some((track) => track.id === event.track.id)
+      if (!alreadyAdded) {
+        remoteAudioStreamRef.current.addTrack(event.track)
+        setRemoteAudioVersion((prev) => prev + 1)
+      }
+      return
+    }
+
+    if (trackType === 'screen') {
+      const stream = event.streams[0] ?? new MediaStream([event.track])
+      remoteScreenStreamRef.current = stream
+      setRemoteFeeds((prev) => ({ ...prev, screen: stream }))
+      return
+    }
+
+    const stream = event.streams[0] ?? new MediaStream([event.track])
+    remoteCameraStreamRef.current = stream
+    setRemoteFeeds((prev) => ({ ...prev, camera: stream }))
+  }, [])
+
+  const processAnnotationJson = useCallback((payload: string) => {
+    let message: AnnotationMessage | null = null
+    try {
+      message = JSON.parse(payload) as AnnotationMessage
+    } catch (err) {
+      console.error('Failed to parse annotation payload', err)
+      return
+    }
+
+    if (!message) {
+      return
+    }
+
+    if (message.kind === 'annotation') {
+      const ttlMs = message.ttlMs ?? DEFAULT_ANNOTATION_TTL
+      const entry: RenderableAnnotation = {
+        ...message,
+        ttlMs,
+        createdAt: Date.now(),
+      }
+      setAnnotations((prev) => {
+        const withoutDuplicate = prev.filter(
+          (annotation) => annotation.id !== entry.id,
+        )
+        return [...withoutDuplicate, entry]
+      })
+      return
+    }
+
+    if (message.kind === 'clear') {
+      setAnnotations((prev) =>
+        message.targetId
+          ? prev.filter((annotation) => annotation.id !== message.targetId)
+          : [],
+      )
+    }
+  }, [])
+
+  const handleAnnotationChannelMessage = useCallback(
+    (event: MessageEvent) => {
+      const data = event.data
+      if (typeof data === 'string') {
+        processAnnotationJson(data)
+        return
+      }
+      if (data instanceof ArrayBuffer) {
+        if (!textDecoderRef.current) {
+          textDecoderRef.current = new TextDecoder()
+        }
+        processAnnotationJson(textDecoderRef.current.decode(data))
+        return
+      }
+      if (data instanceof Blob) {
+        data
+          .text()
+          .then(processAnnotationJson)
+          .catch((err) => {
+            console.error('Failed to decode annotation blob', err)
+          })
+      }
+    },
+    [processAnnotationJson],
+  )
+
+  const handleSignalingMessage = useCallback(
+    async (message: SignalingMessage) => {
+      if (
+        message.type === 'peer-update' &&
+        message.payload &&
+        'participants' in message.payload
+      ) {
+        const participants = Number(message.payload.participants)
+        if (!Number.isNaN(participants)) {
+          setParticipantCount(participants)
+          if (
+            message.senderRole === 'agent' &&
+            participants > 1 &&
+            lastOfferRef.current
+          ) {
+            console.log(
+              '[live-agent] Agent joined; replaying offer to ensure negotiation starts.',
+            )
+            sendSignal({
+              type: 'offer',
+              payload: lastOfferRef.current,
+            })
+          }
+        }
+        return
+      }
+
+      if (message.type === 'heartbeat') {
+        return
+      }
+
+      if (message.type === 'error') {
+        cleanupLiveAgent(
+          message.payload?.message ?? 'Signaling error',
+          'error',
+          false,
+        )
+        return
+      }
+
+      const peer = pcRef.current
+      if (!peer) {
+        return
+      }
+
+      try {
+        if (message.type === 'answer') {
+          await peer.setRemoteDescription(message.payload)
+        } else if (message.type === 'ice') {
+          await peer.addIceCandidate(message.payload)
+        } else if (message.type === 'hangup') {
+          cleanupLiveAgent('Agent ended the session', 'idle', false)
+        }
+      } catch (err) {
+        cleanupLiveAgent(
+          err instanceof Error
+            ? err.message
+            : 'Failed to process signaling message',
+          'error',
+          false,
+        )
+      }
+    },
+    [cleanupLiveAgent, sendSignal],
+  )
+
+  const startLiveAgentSession = useCallback(async () => {
+    if (callState === 'connecting' || callState === 'preparing') {
+      return
+    }
+
+    setCallError(null)
+    setCallState('preparing')
+
+    try {
+      const { sessionId: id, iceServers } = await createSignalingSession()
+      if (!id) {
+        cleanupLiveAgent(
+          'Failed to create signaling session. Please check signaling server connection.',
+          'error',
+        )
+        return
+      }
+      console.log('Signaling session created:', { sessionId: id, iceServers })
+      setSessionId(id)
+
+      try {
+        await createLiveAgentTicket({
+          sessionId: id,
+          atmId: 'VTM-001',
+          customerName: 'Walk-up Customer',
+          issueType: currentAction?.intent ?? 'Live Agent Request',
+          description: currentAction
+            ? [
+                `Intent: ${currentAction.intent}`,
+                currentAction.amount
+                  ? `Amount: $${currentAction.amount.toLocaleString()}`
+                  : null,
+                currentAction.recipient
+                  ? `Recipient: ${currentAction.recipient}`
+                  : null,
+                currentAction.duration
+                  ? `Duration: ${currentAction.duration} months`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(' · ')
+            : 'Customer requested assistance from the kiosk.',
+          priority: 'high',
+          metadata: {
+            language,
+            amount: currentAction?.amount,
+            recipient: currentAction?.recipient,
+            duration: currentAction?.duration,
+          },
+        })
+      } catch (notificationError) {
+        console.error('Live agent notification failed', notificationError)
+        setCallError(
+          notificationError instanceof Error
+            ? `Live agent notification failed: ${notificationError.message}`
+            : 'Unable to notify live agent dashboard. Please share session code manually.',
+        )
+      }
+
+      let peer: RTCPeerConnection
+      try {
+        console.log('Creating RTCPeerConnection with ICE servers:', iceServers)
+        peer = buildPeerConnection({
+          iceServers,
+          onIceCandidate: (candidate) => {
+            const payload = candidate.toJSON()
+            sendSignal({ type: 'ice', payload })
+          },
+          onTrack: handleRemoteTrack,
+          onConnectionStateChange: (state) => {
+            if (state === 'connected') {
+              setCallState('connected')
+            } else if (state === 'failed') {
+              cleanupLiveAgent('Peer connection failed', 'error')
+            } else if (state === 'disconnected') {
+              setCallState('connecting')
+            }
+          },
+        })
+        console.log('RTCPeerConnection created successfully')
+      } catch (peerError) {
+        console.error('RTCPeerConnection creation error:', peerError)
+        const errorMessage =
+          peerError instanceof Error ? peerError.message : 'Unknown error'
+        cleanupLiveAgent(
+          errorMessage.includes('Configuration') ||
+            errorMessage.includes('Invalid')
+            ? `WebRTC configuration error: ${errorMessage}. Please ensure the signaling server is running at ${import.meta.env.VITE_SIGNALING_HTTP_URL ?? 'https://localhost:4100'}.`
+            : `Failed to create peer connection: ${errorMessage}`,
+          'error',
+        )
+        return
+      }
+      pcRef.current = peer
+      registerDataChannelHandler(peer, (event) => {
+        if (event.channel.label !== ANNOTATION_CHANNEL_LABEL) {
+          return
+        }
+        annotationChannelRef.current = attachHandlersToChannel(event.channel, {
+          onMessage: handleAnnotationChannelMessage,
+          onClose: () => {
+            annotationChannelRef.current = null
+          },
+        })
+      })
+
+      const cameraStream = await createCameraStream()
+      cameraStream
+        .getVideoTracks()
+        .forEach((track) => (track.contentHint = 'camera'))
+      localCameraStreamRef.current = cameraStream
+      setLocalMedia((prev) => ({ ...prev, camera: cameraStream }))
+      addStreamToPeer(peer, cameraStream)
+
+      // Screen sharing is optional - proceed with camera only if screen share fails
+      let screenStream: MediaStream | null = null
+      try {
+        screenStream = await createScreenStream()
+        screenStream
+          .getVideoTracks()
+          .forEach((track) => (track.contentHint = 'screen'))
+        localScreenStreamRef.current = screenStream
+        setLocalMedia((prev) => ({ ...prev, screen: screenStream }))
+        if (screenStream) {
+          addStreamToPeer(peer, screenStream)
+          console.log('Screen sharing enabled')
+        }
+      } catch (err) {
+        console.warn(
+          'Screen sharing not available or denied:',
+          err instanceof Error ? err.message : err,
+        )
+        // Continue without screen sharing - camera feed is sufficient
+        setCallError(
+          'Screen sharing is not available. The live agent will still be able to see your camera feed.',
+        )
+        // Clear the error after a few seconds so it doesn't block the UI
+        setTimeout(() => setCallError(null), 5000)
+      }
+
+      setCallState('connecting')
+
+      const socket = connectSignalingSocket({
+        sessionId: id,
+        role: 'vtm',
+        onMessage: handleSignalingMessage,
+        onClose: () => {
+          cleanupLiveAgent('Signaling channel closed', 'error', false)
+        },
+        onOpen: async () => {
+          flushPendingSignals()
+          try {
+            const offer = await peer.createOffer()
+            await peer.setLocalDescription(offer)
+            lastOfferRef.current = offer
+            sendSignal({ type: 'offer', payload: offer })
+          } catch (err) {
+            cleanupLiveAgent(
+              err instanceof Error ? err.message : 'Unable to complete offer',
+              'error',
+            )
+          }
+        },
+      })
+
+      wsRef.current = socket
+    } catch (err) {
+      cleanupLiveAgent(
+        err instanceof Error ? err.message : 'Failed to start live session',
+        'error',
+      )
+    }
+  }, [
+    callState,
+    cleanupLiveAgent,
+    currentAction,
+    flushPendingSignals,
+    handleRemoteTrack,
+    handleAnnotationChannelMessage,
+    handleSignalingMessage,
+    language,
+    sendSignal,
+  ])
+
+  const endLiveAgentSession = useCallback(() => {
+    if (callState === 'idle') {
+      return
+    }
+    sendSignal({ type: 'hangup' })
+    cleanupLiveAgent(undefined, 'idle')
+  }, [callState, cleanupLiveAgent, sendSignal])
+
+  const statusCopy: Record<CallState, string> = {
+    idle: 'Idle',
+    preparing: 'Requesting agent',
+    connecting: 'Negotiating',
+    connected: 'Connected',
+    error: 'Error',
+  }
+
+  const statusColor: Record<CallState, string> = {
+    idle: 'bg-slate-800 text-slate-200',
+    preparing: 'bg-amber-500/15 text-amber-100',
+    connecting: 'bg-blue-500/15 text-blue-100',
+    connected: 'bg-emerald-500/15 text-emerald-100',
+    error: 'bg-rose-500/15 text-rose-100',
+  }
+
+  const liveAgentCount = Math.max(participantCount - 1, 0)
+  const showStartButton =
+    callState === 'idle' || callState === 'error' || callState === 'preparing'
+
+  return (
+    <div className="space-y-5 rounded-xl border border-slate-800 bg-slate-900/40 p-6">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <p className="text-xs uppercase tracking-[0.35em] text-slate-500">
+            Live agent assist
+          </p>
+          <h2 className="mt-1 text-xl font-semibold text-white">
+            Escalate when needed
+          </h2>
+          <p className="text-sm text-slate-400">
+            Share context, video, and annotations with a human agent.
+          </p>
+        </div>
+        <span
+          className={`rounded-full px-3 py-1 text-xs font-semibold ${statusColor[callState]}`}
+        >
+          {statusCopy[callState]}
+        </span>
+      </div>
+
+      <div className="text-sm text-slate-400">
+        {sessionId ? (
+          <>
+            Session <span className="font-mono text-white/90">{sessionId}</span>
+          </>
+        ) : (
+          'No session started'
+        )}
+      </div>
+
+      {callError && (
+        <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-100">
+          {callError}
+        </div>
+      )}
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <div>
+          <div className="mb-2 flex items-center gap-2 text-sm text-slate-400">
+            <MonitorUp size={16} />
+            <span>Local preview</span>
+          </div>
+          <video
+            ref={localVideoRef}
+            muted
+            playsInline
+            autoPlay
+            className="aspect-video w-full rounded-lg border border-slate-800 bg-black object-cover"
+          />
+        </div>
+        <div>
+          <div className="mb-2 flex items-center gap-2 text-sm text-slate-400">
+            <MonitorUp size={16} />
+            <span>Remote agent video</span>
+          </div>
+          <video
+            ref={remoteVideoRef}
+            playsInline
+            autoPlay
+            className="aspect-video w-full rounded-lg border border-slate-800 bg-black object-contain"
+          />
+        </div>
+        <div className="md:col-span-2">
+          <div className="mb-2 flex items-center gap-2 text-sm text-slate-400">
+            <MonitorUp size={16} />
+            <span>Shared screen</span>
+          </div>
+          <video
+            ref={remoteScreenRef}
+            playsInline
+            autoPlay
+            className="aspect-video w-full rounded-lg border border-slate-800 bg-black object-contain"
+          />
+        </div>
+      </div>
+
+      <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="rounded-lg border border-slate-800 bg-slate-900/30 p-4 text-sm text-slate-300">
+          <div className="flex items-center justify-between">
+            <span>Agents connected</span>
+            <span className="text-white font-semibold">
+              {liveAgentCount > 0 ? liveAgentCount : 'Waiting'}
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-slate-500">
+            Agents can join via <code className="text-cyan-300">/agent</code>.
+          </p>
+        </div>
+        <div className="rounded-lg border border-slate-800 bg-slate-900/30 p-4 text-sm text-slate-300">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="font-medium text-white">Show annotations</p>
+              <p className="text-xs text-slate-500">
+                Let the agent draw on the kiosk screen.
+              </p>
+            </div>
+            <label className="inline-flex items-center gap-2 text-xs font-semibold text-white">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-cyan-500"
+                checked={annotationsEnabled}
+                onChange={(event) =>
+                  setAnnotationsEnabled(event.target.checked)
+                }
+              />
+              {annotationsEnabled ? 'On' : 'Off'}
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2 text-sm text-slate-400 sm:flex-row">
+        {showStartButton ? (
+          <button
+            onClick={startLiveAgentSession}
+            disabled={callState === 'preparing'}
+            className="flex-1 rounded-lg border border-slate-700 px-4 py-3 font-semibold text-white transition hover:border-slate-500 disabled:text-slate-500"
+          >
+            <span className="inline-flex items-center justify-center gap-2">
+              <PhoneCall size={18} />
+              Request live agent
+            </span>
+          </button>
+        ) : (
+          <button
+            onClick={endLiveAgentSession}
+            className="flex-1 rounded-lg border border-slate-700 px-4 py-3 font-semibold text-white transition hover:border-slate-500"
+          >
+            <span className="inline-flex items-center justify-center gap-2">
+              <PhoneOff size={18} />
+              End session
+            </span>
+          </button>
+        )}
+        <div className="rounded-lg border border-slate-800 bg-slate-900/30 px-4 py-3">
+          {sessionId
+            ? 'Agent sees current action details automatically.'
+            : 'Start a session to share this screen with an agent.'}
+        </div>
+      </div>
+
+      <AnnotationOverlay
+        annotations={annotations}
+        visible={
+          annotationsEnabled && annotations.length > 0 && callState !== 'idle'
+        }
+      />
+    </div>
+  )
+}

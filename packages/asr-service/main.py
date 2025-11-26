@@ -69,6 +69,7 @@ MALAY_KEYWORDS = {
     "rujukan",
     "perbankan",
     "kewangan",
+    "saya",
 }
 
 

@@ -6,12 +6,16 @@ export type BankingIntent =
   | 'CardReplacement'
   | 'UpdateBook'
   | 'CardApp'
+  | 'ClarificationNeeded'
 
 export interface BankingAction {
   intent: BankingIntent
   amount?: number
   recipient?: string
   duration?: number
+  spokenResponse?: string
+  transcript?: string
+  translatedTranscript?: string
   timestamp: number
 }
 
@@ -29,12 +33,13 @@ export interface BankState {
   transactions: Transaction[]
   currentAction: BankingAction | null
   language: string
+  languageSource: 'auto' | 'manual'
   isRecording: boolean
   isProcessing: boolean
   setBalance: (balance: number) => void
   addTransaction: (transaction: Omit<Transaction, 'id' | 'timestamp'>) => void
   setCurrentAction: (action: BankingAction | null) => void
-  setLanguage: (lang: string) => void
+  setLanguage: (lang: string, source?: 'auto' | 'manual') => void
   setIsRecording: (recording: boolean) => void
   setIsProcessing: (processing: boolean) => void
   reset: () => void
@@ -71,6 +76,7 @@ export const useBankStore = create<BankState>((set) => ({
   transactions: initialTransactions,
   currentAction: null,
   language: 'en',
+  languageSource: 'auto',
   isRecording: false,
   isProcessing: false,
   setBalance: (balance) => set({ balance }),
@@ -90,7 +96,11 @@ export const useBankStore = create<BankState>((set) => ({
           : state.balance - transaction.amount,
     })),
   setCurrentAction: (action) => set({ currentAction: action }),
-  setLanguage: (language) => set({ language }),
+  setLanguage: (language, source = 'auto') =>
+    set({
+      language,
+      languageSource: source,
+    }),
   setIsRecording: (isRecording) => set({ isRecording }),
   setIsProcessing: (isProcessing) => set({ isProcessing }),
   reset: () =>
@@ -98,6 +108,7 @@ export const useBankStore = create<BankState>((set) => ({
       currentAction: null,
       isRecording: false,
       isProcessing: false,
+      languageSource: 'auto',
     }),
 }))
 

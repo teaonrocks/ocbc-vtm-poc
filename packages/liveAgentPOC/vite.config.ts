@@ -23,11 +23,11 @@ const devtoolsEventBusPort = Number(
 const config = defineConfig({
   plugins: [
     mkcert(),
-    devtools({
-      eventBusConfig: {
-        port: devtoolsEventBusPort,
-      },
-    }),
+    // devtools({
+    //   eventBusConfig: {
+    //     port: devtoolsEventBusPort,
+    //   },
+    // }),
 
     // this is the plugin that enables path aliases
     viteTsConfigPaths({

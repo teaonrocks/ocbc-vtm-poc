@@ -8,7 +8,12 @@ export const Route = createFileRoute('/test-whisper')({
 })
 
 function WhisperTest() {
-  const { transcribeAudio, isWhisperReady, error: aiError } = useLocalAI()
+  const {
+    transcribeAudio,
+    isWhisperReady,
+    error: aiError,
+    modelInfo,
+  } = useLocalAI()
   const [isRecording, setIsRecording] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
   const [transcription, setTranscription] = useState<string | null>(null)
@@ -96,7 +101,20 @@ function WhisperTest() {
     }
   }, [isRecording, startRecording, stopRecording])
 
-  const serverUrl = import.meta.env.VITE_FASTER_WHISPER_URL
+  const backendLabel =
+    modelInfo.backend === 'server' ? 'Remote Server' : 'Local WebGPU'
+  const backendIcon =
+    modelInfo.backend === 'server' ? <Server size={16} /> : <Cpu size={16} />
+  const modelStatusCopy: Record<typeof modelInfo.status, string> = {
+    loading: 'Loading model…',
+    ready: 'Ready',
+    error: 'Unavailable',
+  }
+  const modelStatusColor: Record<typeof modelInfo.status, string> = {
+    loading: 'text-yellow-600',
+    ready: 'text-green-600',
+    error: 'text-red-600',
+  }
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-2xl">
@@ -106,25 +124,28 @@ function WhisperTest() {
       <div className="mb-6 p-4 bg-gray-100 rounded-lg">
         <h2 className="text-lg font-semibold mb-2">Status</h2>
         <div className="space-y-1">
-          <div>
-            <span className="font-medium">Backend:</span>{' '}
-            {serverUrl ? (
-              <span className="text-blue-600 font-semibold flex items-center gap-1 inline-flex">
-                <Server size={16} /> Remote Server
-              </span>
-            ) : (
-              <span className="text-purple-600 font-semibold flex items-center gap-1 inline-flex">
-                <Cpu size={16} /> Local WebGPU
-              </span>
-            )}
+          <div className="flex items-center gap-1">
+            <span className="font-medium">Backend:</span>
+            <span
+              className={`font-semibold flex items-center gap-1 inline-flex ${modelInfo.backend === 'server' ? 'text-blue-600' : 'text-purple-600'}`}
+            >
+              {backendIcon}
+              {backendLabel}
+            </span>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="font-medium">Model:</span>
+            <span className="font-mono text-sm font-semibold text-slate-800">
+              {modelInfo.name ?? 'Detecting…'}
+            </span>
           </div>
           <div>
-            <span className="font-medium">Model:</span>{' '}
-            {isWhisperReady ? (
-              <span className="text-green-600">Ready</span>
-            ) : (
-              <span className="text-yellow-600">Loading...</span>
-            )}
+            <span className="font-medium">Status:</span>{' '}
+            <span
+              className={`${modelStatusColor[modelInfo.status]} font-semibold`}
+            >
+              {modelStatusCopy[modelInfo.status]}
+            </span>
           </div>
           <div>
             <span className="font-medium">Recording:</span>{' '}
@@ -141,6 +162,11 @@ function WhisperTest() {
             </div>
           )}
         </div>
+        {modelInfo.error && (
+          <div className="mt-4 p-3 bg-red-100 border border-red-200 text-red-700 rounded-lg text-sm">
+            Model error: {modelInfo.error}
+          </div>
+        )}
       </div>
 
       {/* Error Display */}

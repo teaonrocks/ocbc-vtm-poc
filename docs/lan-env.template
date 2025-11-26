@@ -5,3 +5,8 @@ VITE_SIGNALING_WS_URL=wss://192.168.1.80:4100/ws
 VITE_LIVE_AGENT_API_URL=https://192.168.1.80:8081/api/ticket
 VITE_DISABLE_STUN=1
 
+# ElevenLabs TTS (server-only)
+ELEVENLABS_API_KEY=replace-with-your-api-key
+ELEVENLABS_DEFAULT_VOICE_ID=replace-with-voice-id
+ELEVENLABS_MODEL_ID=eleven_turbo_v2_5
+

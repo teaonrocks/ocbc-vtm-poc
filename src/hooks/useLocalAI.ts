@@ -19,6 +19,7 @@ type TokenizerWithAsr = {
 }
 
 const TARGET_SAMPLE_RATE = 16000
+const LOCAL_WHISPER_MODEL_NAME = 'Xenova/whisper-small'
 const CJK_REGEX = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/
 const TAMIL_REGEX = /[\u0B80-\u0BFF]/
 const ASCII_LETTER_REGEX = /[a-z]/i
@@ -67,6 +68,11 @@ const MALAY_KEYWORDS = [
   'perbankan',
   'kewangan',
 ]
+
+function normalizeServerUrl(url?: string) {
+  if (!url) return undefined
+  return url.replace(/\/+$/, '')
+}
 
 let whisperPipeline: Pipeline | null = null
 
@@ -194,6 +200,16 @@ async function audioBlobToFloat32(audioBlob: Blob): Promise<Float32Array> {
   return resampled
 }
 
+type ModelBackend = 'server' | 'webgpu'
+type ModelStatus = 'loading' | 'ready' | 'error'
+
+type ModelInfo = {
+  backend: ModelBackend
+  status: ModelStatus
+  name: string | null
+  error: string | null
+}
+
 type WhisperTask = 'transcribe' | 'translate'
 
 async function runWhisperTranscription(
@@ -229,7 +245,7 @@ async function loadWhisper() {
   const transformers: TransformersModule = await importTransformersModule()
   const pipelineInstance = (await transformers.pipeline(
     'automatic-speech-recognition',
-    'Xenova/whisper-small',
+    LOCAL_WHISPER_MODEL_NAME,
     {
       device: 'webgpu',
     } as Record<string, unknown>,
@@ -283,11 +299,16 @@ async function transcribeWithServer(
 }
 
 export function useLocalAI() {
+  const serverUrl = normalizeServerUrl(import.meta.env.VITE_FASTER_WHISPER_URL)
   const [isWhisperReady, setIsWhisperReady] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const isInitializing = useRef(false)
-
-  const serverUrl = import.meta.env.VITE_FASTER_WHISPER_URL
+  const [modelInfo, setModelInfo] = useState<ModelInfo>(() => ({
+    backend: serverUrl ? 'server' : 'webgpu',
+    status: 'loading',
+    name: serverUrl ? 'Remote ASR' : LOCAL_WHISPER_MODEL_NAME,
+    error: null,
+  }))
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -308,6 +329,68 @@ export function useLocalAI() {
       setIsWhisperReady(true)
     }
   }, [serverUrl])
+
+  useEffect(() => {
+    let cancelled = false
+
+    if (serverUrl) {
+      setModelInfo({
+        backend: 'server',
+        status: 'loading',
+        name: 'Remote ASR',
+        error: null,
+      })
+
+      const controller = new AbortController()
+
+      const fetchModelInfo = async () => {
+        try {
+          const response = await fetch(`${serverUrl}/healthz`, {
+            signal: controller.signal,
+          })
+          if (!response.ok) {
+            throw new Error(`Health check failed (${response.status})`)
+          }
+          const data = (await response.json()) as { model?: string }
+          if (cancelled) return
+          setModelInfo({
+            backend: 'server',
+            status: 'ready',
+            name: data?.model ?? 'Remote ASR',
+            error: null,
+          })
+        } catch (err) {
+          if (cancelled) return
+          console.error('Failed to fetch Whisper model info:', err)
+          setModelInfo({
+            backend: 'server',
+            status: 'error',
+            name: 'Remote ASR',
+            error:
+              err instanceof Error ? err.message : 'Failed to reach ASR server',
+          })
+        }
+      }
+
+      fetchModelInfo()
+
+      return () => {
+        cancelled = true
+        controller.abort()
+      }
+    }
+
+    setModelInfo({
+      backend: 'webgpu',
+      status: isWhisperReady ? 'ready' : 'loading',
+      name: LOCAL_WHISPER_MODEL_NAME,
+      error: null,
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [serverUrl, isWhisperReady])
 
   const transcribeAudio = useCallback(
     async (audioBlob: Blob): Promise<TranscriptionResult> => {
@@ -410,5 +493,6 @@ export function useLocalAI() {
     isReady: isWhisperReady,
     error,
     transcribeAudio,
+    modelInfo,
   }
 }

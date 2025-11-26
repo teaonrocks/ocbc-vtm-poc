@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as TestWhisperRouteImport } from './routes/test-whisper'
+import { Route as LiveAgentRouteImport } from './routes/live-agent'
 import { Route as AgentRouteImport } from './routes/agent'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as DemoStartServerFuncsRouteImport } from './routes/demo/start.server-funcs'
@@ -23,6 +24,11 @@ import { Route as DemoStartSsrDataOnlyRouteImport } from './routes/demo/start.ss
 const TestWhisperRoute = TestWhisperRouteImport.update({
   id: '/test-whisper',
   path: '/test-whisper',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LiveAgentRoute = LiveAgentRouteImport.update({
+  id: '/live-agent',
+  path: '/live-agent',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AgentRoute = AgentRouteImport.update({
@@ -74,6 +80,7 @@ const DemoStartSsrDataOnlyRoute = DemoStartSsrDataOnlyRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/agent': typeof AgentRoute
+  '/live-agent': typeof LiveAgentRoute
   '/test-whisper': typeof TestWhisperRoute
   '/demo/api/names': typeof DemoApiNamesRoute
   '/demo/start/api-request': typeof DemoStartApiRequestRoute
@@ -86,6 +93,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/agent': typeof AgentRoute
+  '/live-agent': typeof LiveAgentRoute
   '/test-whisper': typeof TestWhisperRoute
   '/demo/api/names': typeof DemoApiNamesRoute
   '/demo/start/api-request': typeof DemoStartApiRequestRoute
@@ -99,6 +107,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/agent': typeof AgentRoute
+  '/live-agent': typeof LiveAgentRoute
   '/test-whisper': typeof TestWhisperRoute
   '/demo/api/names': typeof DemoApiNamesRoute
   '/demo/start/api-request': typeof DemoStartApiRequestRoute
@@ -113,6 +122,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/agent'
+    | '/live-agent'
     | '/test-whisper'
     | '/demo/api/names'
     | '/demo/start/api-request'
@@ -125,6 +135,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/agent'
+    | '/live-agent'
     | '/test-whisper'
     | '/demo/api/names'
     | '/demo/start/api-request'
@@ -137,6 +148,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/agent'
+    | '/live-agent'
     | '/test-whisper'
     | '/demo/api/names'
     | '/demo/start/api-request'
@@ -150,6 +162,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AgentRoute: typeof AgentRoute
+  LiveAgentRoute: typeof LiveAgentRoute
   TestWhisperRoute: typeof TestWhisperRoute
   DemoApiNamesRoute: typeof DemoApiNamesRoute
   DemoStartApiRequestRoute: typeof DemoStartApiRequestRoute
@@ -167,6 +180,13 @@ declare module '@tanstack/react-router' {
       path: '/test-whisper'
       fullPath: '/test-whisper'
       preLoaderRoute: typeof TestWhisperRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/live-agent': {
+      id: '/live-agent'
+      path: '/live-agent'
+      fullPath: '/live-agent'
+      preLoaderRoute: typeof LiveAgentRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/agent': {
@@ -238,6 +258,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AgentRoute: AgentRoute,
+  LiveAgentRoute: LiveAgentRoute,
   TestWhisperRoute: TestWhisperRoute,
   DemoApiNamesRoute: DemoApiNamesRoute,
   DemoStartApiRequestRoute: DemoStartApiRequestRoute,
